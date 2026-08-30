@@ -54,6 +54,14 @@ struct NoteEditorView: View {
                     .fill(note.meta.color.swiftUIColor)
                     .shadow(color: .black.opacity(0.20), radius: 10, x: -2, y: 3)
             )
+            // Without this, SwiftUI hit-tests the card as its bounding-box
+            // frame, so clicks in the four corners outside the 14pt-radius
+            // curve land on the card instead of falling through to the
+            // tap-outside-to-close backdrop behind it. This only shapes the
+            // card's own hit region — it doesn't affect hit-testing of the
+            // controls inside (text view, footer buttons, swatches), which
+            // each already define their own `.contentShape`/tap targets.
+            .contentShape(RoundedRectangle(cornerRadius: 14))
             .onAppear { text = note.body }
             // NOTE: deliberately *not* `.id(noteID)`. Re-identifying the view
             // would tear it down and rebuild it on a note switch, and SwiftUI
