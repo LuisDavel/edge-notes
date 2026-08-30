@@ -85,12 +85,30 @@ struct DeckView: View {
     @ViewBuilder
     private func openView(noteID: UUID) -> some View {
         if controller.store.notes.contains(where: { $0.id == noteID && $0.meta.status == .active }) {
-            HStack(alignment: .top, spacing: 0) {
-                Spacer()
-                NoteEditorView(controller: controller, noteID: noteID)
-                    .padding(.trailing, 8)
-                    .padding(.top, 60)
-                fannedTabsColumn
+            ZStack(alignment: .trailing) {
+                // Clicking the panel anywhere the note isn't closes it.
+                //
+                // It has to be a SwiftUI view rather than an AppKit view
+                // behind the hosting view: `NSHostingView.hitTest` claims its
+                // whole rect, transparent pixels included (measured), so
+                // nothing underneath it can ever be reached. Here the normal
+                // SwiftUI rule applies instead — the card, the tabs and the
+                // + button are above this in the ZStack and take their own
+                // clicks first, so only a click that misses all of them
+                // lands on the backdrop.
+                //
+                // `.fanned`, not `.collapsed`: the pointer is still inside
+                // the panel, and hover-exit settles the deck from there.
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture { controller.closeOpenNote(to: .fanned) }
+                HStack(alignment: .top, spacing: 0) {
+                    Spacer()
+                    NoteEditorView(controller: controller, noteID: noteID)
+                        .padding(.trailing, 8)
+                        .padding(.top, 60)
+                    fannedTabsColumn
+                }
             }
         } else {
             // The open note was deleted or archived out from under us

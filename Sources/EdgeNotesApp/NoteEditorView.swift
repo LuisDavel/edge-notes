@@ -145,7 +145,12 @@ struct NoteEditorView: View {
         alert.addButton(withTitle: "Delete")
         alert.addButton(withTitle: "Cancel")
         alert.buttons.first?.hasDestructiveAction = true
-        if alert.runModal() == .alertFirstButtonReturn {
+        // The alert takes key status off the panel, which is the same signal
+        // as "the user clicked into another app". Suppressed for the whole
+        // modal so the note cannot be dismissed out from under a question it
+        // has not answered yet.
+        let response = controller.withOutsideCloseSuppressed { alert.runModal() }
+        if response == .alertFirstButtonReturn {
             try? controller.store.delete(id: noteID)
             close()
         }

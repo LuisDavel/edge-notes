@@ -62,6 +62,104 @@ final class DeckController: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor in self?.reposition() }
         }
+        // Clicking into another app closes the open note. Delivered
+        // synchronously (queue: nil) and then re-scheduled by hand so that
+        // this handler and the suppression released by
+        // `withOutsideCloseSuppressed` sit in one FIFO — see
+        // `handleResignKey`.
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.didResignKeyNotification,
+            object: panel, queue: nil
+        ) { [weak self] _ in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self?.handleResignKey() }
+            }
+        }
+        NotificationCenter.default.addObserver(
+            forName: NSMenu.didBeginTrackingNotification, object: nil, queue: nil
+        ) { [weak self] note in
+            guard (note.object as? NSMenu)?.supermenu == nil else { return }
+            MainActor.assumeIsolated { self?.menuTrackingSuppression = 1 }
+        }
+        NotificationCenter.default.addObserver(
+            forName: NSMenu.didEndTrackingNotification, object: nil, queue: nil
+        ) { [weak self] note in
+            guard (note.object as? NSMenu)?.supermenu == nil else { return }
+            // Released a queue turn late for the same reason the modal
+            // suppression is: the resign posted when the menu opened may
+            // still be queued behind this.
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self?.menuTrackingSuppression = 0 }
+            }
+        }
+    }
+
+    // MARK: - Closing on a click outside the note
+
+    /// Non-zero while something this app put on screen deliberately owns the
+    /// user's attention. See `withOutsideCloseSuppressed`.
+    private var outsideCloseSuppression = 0
+
+    /// 1 while a menu of ours is tracking: the status-item menu (the only
+    /// route to the Library) and the text view's right-click spelling menu
+    /// both take key status off the panel, and neither is the user leaving
+    /// the note. Only *root* menus are counted, so a submenu opening and
+    /// closing cannot leave this stuck above zero and silently disable the
+    /// outside-click close for the rest of the session.
+    private var menuTrackingSuppression = 0
+
+    /// Runs `body` with the outside-click close disabled.
+    ///
+    /// The note's Delete confirmation is an `NSAlert`, and `runModal()` spins
+    /// its own run loop: the panel resigns key the moment the alert appears,
+    /// and the queued handling of that can be serviced *while the alert is
+    /// still up*. Without this the alert would dismiss the note underneath
+    /// itself before the user had answered it.
+    func withOutsideCloseSuppressed<T>(_ body: () -> T) -> T {
+        outsideCloseSuppression += 1
+        defer {
+            // Released one queue turn late, on purpose. A `didResignKey`
+            // posted while the modal was up may still be sitting on the main
+            // queue when `runModal` returns; it was enqueued before this
+            // block, so it runs first and still sees the suppression. Undoing
+            // it synchronously here would let that stale notification close
+            // the note the instant the user picked Cancel.
+            DispatchQueue.main.async { [self] in
+                outsideCloseSuppression -= 1
+            }
+        }
+        return body()
+    }
+
+    /// The panel lost key status. Close the open note only if the click that
+    /// took it really went outside EdgeNotes.
+    ///
+    /// Deliberately not a blanket "resigned key ⇒ close". Two windows of our
+    /// own take key status away from the panel while the note must stay
+    /// open: the Delete alert and the Library. Both are covered here by
+    /// `keyWindow`/`modalWindow` being ours; the alert is covered a second
+    /// time, and deterministically, by `withOutsideCloseSuppressed`.
+    private func handleResignKey() {
+        guard case .open = state else { return }
+        guard outsideCloseSuppression == 0, menuTrackingSuppression == 0 else { return }
+        guard NSApp.modalWindow == nil else { return }
+        // A window of ours took key status — the user is still inside
+        // EdgeNotes. `keyWindow` is nil exactly when the app is no longer
+        // the one being typed into, which is the case we want.
+        guard NSApp.keyWindow == nil else { return }
+        // Collapse rather than fan: the pointer is over another app now, so
+        // no hover-exit will ever arrive to settle a fanned deck back down
+        // and it would be left standing open at 160pt.
+        closeOpenNote(to: .collapsed)
+    }
+
+    /// Single entry point for the close routes that are not the editor's own
+    /// Close/Esc. Flushes the queued body write first — every new way of
+    /// dismissing a note has to save exactly like the old ones do.
+    func closeOpenNote(to newState: DeckState) {
+        guard case .open = state else { return }
+        flushPendingSave()
+        setState(newState)
     }
 
     var width: CGFloat {
