@@ -65,7 +65,13 @@ struct NoteEditorView: View {
                 text = note.body
                 animateNoteSwap()
             }
-            .onDisappear { debouncer.flush() }
+            .onDisappear {
+                debouncer.flush()
+                // Hand activation back to whatever the user was in before
+                // they clicked into this note (no-op unless the click into
+                // the editor is what activated EdgeNotes).
+                EditorActivation.relinquish()
+            }
             .onExitCommand { close() }   // Esc
         }
     }
