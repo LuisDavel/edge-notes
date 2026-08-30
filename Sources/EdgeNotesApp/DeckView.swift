@@ -16,35 +16,116 @@ extension NoteColor {
 
 struct DeckView: View {
     @ObservedObject var controller: DeckController
+    @State private var revealed: Set<UUID> = []
 
     var body: some View {
-        VStack {
-            Spacer()
-            pill
-            Spacer()
+        Group {
+            switch controller.state {
+            case .collapsed:
+                collapsedPill
+            case .fanned:
+                fannedDeck
+            case .open(let noteID):
+                // Editor completo chega na Task 8; por ora volta pro fan.
+                fannedDeck.onAppear { _ = noteID }
+            }
         }
-        .frame(maxWidth: .infinity, alignment: .trailing)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
         .onHover { hovering in
-            if hovering, controller.state == .collapsed {
-                controller.setState(.fanned)   // fan chega na Task 7
+            switch (hovering, controller.state) {
+            case (true, .collapsed):
+                controller.setState(.fanned)
+                revealStaggered()
+            case (false, .fanned):
+                revealed = []
+                controller.setState(.collapsed)
+            default:
+                break
             }
         }
     }
 
-    private var pill: some View {
-        VStack(spacing: 5) {
+    private var collapsedPill: some View {
+        VStack {
+            Spacer()
+            VStack(spacing: 5) {
+                ForEach(controller.store.activeNotes()) { note in
+                    Capsule()
+                        .fill(note.meta.color.swiftUIColor)
+                        .frame(width: 4, height: 14)
+                }
+            }
+            .padding(.vertical, 8)
+            .padding(.horizontal, 4)
+            .background(RoundedRectangle(cornerRadius: 6).fill(.regularMaterial))
+            .padding(.trailing, 2)
+            Spacer()
+        }
+    }
+
+    private var fannedDeck: some View {
+        VStack(alignment: .trailing, spacing: 6) {
+            Spacer()
             ForEach(controller.store.activeNotes()) { note in
-                Capsule()
-                    .fill(note.meta.color.swiftUIColor)
-                    .frame(width: 4, height: 14)
+                NoteTab(note: note)
+                    .opacity(revealed.contains(note.id) ? 1 : 0)
+                    .offset(x: revealed.contains(note.id) ? 0 : 24)
+                    .onTapGesture { controller.setState(.open(noteID: note.id)) }
+            }
+            addButton
+            Spacer()
+        }
+        .padding(.trailing, 4)
+    }
+
+    private var addButton: some View {
+        Button {
+            let colors = NoteColor.allCases
+            let used = controller.store.activeNotes().count
+            if let note = try? controller.store.createNote(
+                color: colors[used % colors.count], now: Date()) {
+                controller.setState(.open(noteID: note.id))
+            }
+        } label: {
+            Image(systemName: "plus")
+                .font(.system(size: 11, weight: .semibold))
+                .frame(width: 22, height: 22)
+                .background(Circle().fill(.regularMaterial))
+        }
+        .buttonStyle(.plain)
+        .padding(.top, 8)
+    }
+
+    private func revealStaggered() {
+        revealed = []
+        for (index, note) in controller.store.activeNotes().enumerated() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(index) * 0.045) {
+                withAnimation(.spring(duration: 0.28)) {
+                    _ = revealed.insert(note.id)
+                }
             }
         }
-        .padding(.vertical, 8)
-        .padding(.horizontal, 4)
-        .background(
-            RoundedRectangle(cornerRadius: 6)
-                .fill(.regularMaterial)
-        )
-        .padding(.trailing, 2)
+    }
+}
+
+struct NoteTab: View {
+    let note: Note
+
+    var body: some View {
+        Text(note.meta.title.prefix(10).uppercased())
+            .font(.system(size: 9, weight: .semibold))
+            .kerning(0.8)
+            .foregroundStyle(.black.opacity(0.55))
+            .fixedSize()
+            .rotationEffect(.degrees(90))
+            .frame(width: 26, height: 88)
+            .background(
+                UnevenRoundedRectangle(
+                    topLeadingRadius: 8, bottomLeadingRadius: 8,
+                    bottomTrailingRadius: 0, topTrailingRadius: 0)
+                .fill(note.meta.color.swiftUIColor)
+                .shadow(color: .black.opacity(0.18), radius: 4, x: -2, y: 1)
+            )
+            .contentShape(Rectangle())
     }
 }
