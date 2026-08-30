@@ -23,12 +23,20 @@ public enum MarkdownEditing {
             return (mutable as String, cursor..<cursor)
         }
 
+        // The marker's boundary character (all our markers — "**", "*", "`",
+        // "~~" — are runs of a single repeated character). Used to reject a
+        // match that is actually part of a *longer* run of that character,
+        // e.g. a lone "*" immediately outside a "**" pair: that "*" is half
+        // of the bold marker, not a standalone italic boundary.
+        let markerChar = marker.utf16.first
         let beforeStart = sel.location - markerLength
         let hasBefore = beforeStart >= 0
             && ns.substring(with: NSRange(location: beforeStart, length: markerLength)) == marker
+            && (beforeStart == 0 || ns.character(at: beforeStart - 1) != markerChar)
         let afterStart = sel.location + sel.length
         let hasAfter = afterStart + markerLength <= ns.length
             && ns.substring(with: NSRange(location: afterStart, length: markerLength)) == marker
+            && (afterStart + markerLength == ns.length || ns.character(at: afterStart + markerLength) != markerChar)
 
         let mutable = NSMutableString(string: ns)
         if hasBefore && hasAfter {

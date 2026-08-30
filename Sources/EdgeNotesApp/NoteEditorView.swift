@@ -37,7 +37,7 @@ struct NoteEditorView: View {
                     }
                     .buttonStyle(.plain)
                 }
-                MarkdownTextView(text: $text)
+                MarkdownTextView(text: $text, noteID: noteID)
                     .onChange(of: text) { _, newValue in
                         debouncer.call { [weak controller] in
                             try? controller?.store.updateBody(id: noteID, body: newValue, now: Date())

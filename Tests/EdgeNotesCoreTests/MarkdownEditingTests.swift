@@ -39,6 +39,30 @@ final class MarkdownEditingTests: XCTestCase {
         XCTAssertEqual(result.selection, range(result.text, "word"))
     }
 
+    // Regression: a selection sitting right next to a "**" bold marker must
+    // not be mistaken for already being wrapped by a single "*" — that
+    // adjacent "*" is half of the "**" pair, not a standalone italic
+    // boundary. The wrap branch should fire (not unwrap), even though the
+    // resulting markdown ("***hello* world**") is visually ambiguous — that
+    // ambiguity is an accepted limitation of the tokenizer, not a bug here.
+    func testItalicWrapNextToBoldMarkerDoesNotFalselyUnwrap() {
+        let text = "**hello world**"
+        let selection = range(text, "hello")
+        let result = MarkdownEditing.toggleWrap(text: text, selection: selection, marker: "*")
+        XCTAssertEqual(result.text, "***hello* world**")
+        XCTAssertEqual(result.selection, range(result.text, "hello"))
+    }
+
+    // Regression companion: genuine italic unwrap must still work when the
+    // marker is a true standalone "*" pair (not part of a longer run).
+    func testItalicUnwrapStillWorksForGenuineSingleStarPair() {
+        let text = "*hello*"
+        let selection = range(text, "hello")
+        let result = MarkdownEditing.toggleWrap(text: text, selection: selection, marker: "*")
+        XCTAssertEqual(result.text, "hello")
+        XCTAssertEqual(result.selection, range(result.text, "hello"))
+    }
+
     func testInsertLinkWithSelection() {
         let text = "check this out"
         let selection = range(text, "this")

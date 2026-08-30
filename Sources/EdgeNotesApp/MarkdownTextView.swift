@@ -77,8 +77,15 @@ final class MarkdownNSTextView: NSTextView {
 /// overlay computed by `MarkdownHighlighter`.
 struct MarkdownTextView: NSViewRepresentable {
     @Binding var text: String
+    /// Identity of the note currently backing `text`. Used solely to detect
+    /// when the editor has been repointed at a *different* note (as opposed
+    /// to an ordinary re-render of the same note) so the undo stack can be
+    /// cleared — otherwise ⌘Z after switching notes could pop an edit from
+    /// the previous note against this one's buffer.
+    let noteID: UUID
 
     func makeNSView(context: Context) -> NSScrollView {
+        context.coordinator.currentNoteID = noteID
         let textView = MarkdownNSTextView()
         textView.delegate = context.coordinator
         textView.isRichText = false
@@ -110,6 +117,14 @@ struct MarkdownTextView: NSViewRepresentable {
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? MarkdownNSTextView else { return }
+        if context.coordinator.currentNoteID != noteID {
+            context.coordinator.currentNoteID = noteID
+            // The editor is being repointed at a different note's text.
+            // The undo stack holds edits against the *previous* note's
+            // buffer, so it must not survive the switch (⌘Z afterwards
+            // would otherwise pop a stale edit against the wrong note).
+            textView.undoManager?.removeAllActions(withTarget: textView)
+        }
         if textView.string != text {
             textView.string = text
             Self.applyHighlighting(to: textView)
@@ -122,6 +137,7 @@ struct MarkdownTextView: NSViewRepresentable {
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         private let text: Binding<String>
+        var currentNoteID: UUID?
 
         init(text: Binding<String>) {
             self.text = text
