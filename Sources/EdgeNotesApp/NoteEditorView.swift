@@ -44,9 +44,7 @@ struct NoteEditorView: View {
                     }
                     .buttonStyle(.plain)
                 }
-                TextEditor(text: $text)
-                    .font(.system(size: 13))
-                    .scrollContentBackground(.hidden)
+                MarkdownTextView(text: $text)
                     .onChange(of: text) { _, newValue in
                         debouncer.call { [weak controller] in
                             try? controller?.store.updateBody(id: noteID, body: newValue, now: Date())
