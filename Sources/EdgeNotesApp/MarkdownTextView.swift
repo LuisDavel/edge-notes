@@ -500,21 +500,24 @@ struct MarkdownTextView: NSViewRepresentable {
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? MarkdownNSTextView else { return }
             text.wrappedValue = textView.string
-            lastCursorParagraph = nil   // the text moved; the cached line is stale
+            hasCachedExemption = false   // the text moved; the cached line is stale
             MarkdownTextView.applyHighlighting(to: textView)
         }
 
-        /// The paragraph the markers were last left visible on, so an
-        /// ordinary cursor move *within* a line does not re-run the highlight
-        /// pass. Only crossing into another paragraph changes what is hidden.
-        private var lastCursorParagraph: NSRange?
+        /// The paragraph whose markers were last left visible (nil when none
+        /// were), so an ordinary cursor move *within* a line does not re-run
+        /// the highlight pass. Only a change in which paragraph is exempt
+        /// changes what is hidden.
+        private var lastExemption: NSRange?
+        private var hasCachedExemption = false
 
         func textViewDidChangeSelection(_ notification: Notification) {
             guard let textView = notification.object as? MarkdownNSTextView else { return }
-            let paragraph = (textView.string as NSString)
-                .paragraphRange(for: textView.selectedRange())
-            guard paragraph != lastCursorParagraph else { return }
-            lastCursorParagraph = paragraph
+            let exemption = MarkdownTextView.exemptParagraph(
+                text: textView.string, selection: textView.selectedRange())
+            guard !hasCachedExemption || exemption != lastExemption else { return }
+            lastExemption = exemption
+            hasCachedExemption = true
             // Attribute-only, outside `shouldChangeText`, so this never
             // registers with the undo manager and never moves the selection.
             MarkdownTextView.applyHighlighting(to: textView)
@@ -595,13 +598,31 @@ struct MarkdownTextView: NSViewRepresentable {
             return
         }
 
-        let paragraph = (text as NSString).paragraphRange(for: textView.selectedRange())
+        guard let paragraph = exemptParagraph(text: text, selection: textView.selectedRange()) else {
+            hider.hiddenRanges = delimiters
+            return
+        }
         let cursorLine = paragraph.location..<NSMaxRange(paragraph)
         hider.hiddenRanges = delimiters.filter { range in
             // A delimiter never straddles a paragraph break, so testing the
             // lower bound is enough to place it on one side or the other.
             !cursorLine.contains(range.lowerBound)
         }
+    }
+
+    /// The one paragraph allowed to show its markers, or nil for none.
+    ///
+    /// It is the paragraph holding the insertion point. A selection that
+    /// *spans* paragraphs exempts nothing: taking the paragraph range of the
+    /// whole selection — which is what ⌘A hands over — would exempt the
+    /// entire document and flash the note into raw markdown.
+    static func exemptParagraph(text: String, selection: NSRange) -> NSRange? {
+        let nsText = text as NSString
+        guard selection.location <= nsText.length else { return nil }
+        let paragraph = nsText.paragraphRange(
+            for: NSRange(location: selection.location, length: 0))
+        guard NSMaxRange(selection) <= NSMaxRange(paragraph) else { return nil }
+        return paragraph
     }
 
     private static func italicFont(size: CGFloat) -> NSFont {

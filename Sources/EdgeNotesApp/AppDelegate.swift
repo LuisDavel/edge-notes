@@ -50,6 +50,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.menu = menu
     }
 
+    /// ⌘Q reaches the app once the user has clicked into a note (editing is
+    /// what activates EdgeNotes), and the process then exits with the editor
+    /// still on screen — none of the editor's own flush sites run. This is
+    /// the last point at which the queued body write can be made, and
+    /// `NoteStore` writes synchronously, so it is on disk before we return.
+    func applicationWillTerminate(_ notification: Notification) {
+        deck?.flushPendingSave()
+    }
+
     @objc @MainActor private func openLibrary() {
         libraryController.show()
     }

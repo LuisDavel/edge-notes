@@ -202,14 +202,70 @@ final class MarkdownDelimiterTests: XCTestCase {
         XCTAssertEqual(MarkdownHighlighter.delimiterRanges(in: text), [7..<8, 20..<21])
     }
 
-    /// The hidden ranges are handed straight to a layout-manager delegate,
-    /// which walks them per glyph — they must be ordered and disjoint.
-    func testDelimitersAreOrderedAndDisjoint() {
-        let text = "# T\n*a* `b` ~~c~~ [d](e)\n**f**"
-        let ranges = MarkdownHighlighter.delimiterRanges(in: text)
-        XCTAssertFalse(ranges.isEmpty)
-        for (a, b) in zip(ranges, ranges.dropFirst()) {
-            XCTAssertLessThanOrEqual(a.upperBound, b.lowerBound, "overlap between \(a) and \(b)")
+    /// The hidden ranges are handed straight to a layout-manager delegate
+    /// that binary-searches them once per glyph. Ordered and disjoint is
+    /// therefore load-bearing: an out-of-order or overlapping pair makes the
+    /// search miss markers, and a range past the end of the text would be
+    /// asked about a character that does not exist.
+    ///
+    /// Checked over the shapes most likely to break it — ragged star runs,
+    /// ragged tilde runs, one marker nested inside another, a truncated
+    /// link, a heading too deep to be a heading, asterisks inside a code
+    /// span, and a line whose markers sit behind a surrogate pair.
+    func testDelimitersAreOrderedDisjointAndInBoundsForAdversarialInput() {
+        let cases = [
+            "# T\n*a* `b` ~~c~~ [d](e)\n**f**",
+            "****a***",
+            "***a****",
+            "~~~~a~~~~",
+            "**[a](u)**",
+            "[a](",
+            "[a]",
+            "#### x",
+            "#no space",
+            "before `**not bold**` after",
+            "😀 **b** 😀 *i*",
+            "`a` **b** ~~c~~ *d* [e](f)",
+            "**",
+            "*",
+            "",
+            "\n\n\n",
+            "- **a** *b*",
+        ]
+        for text in cases {
+            let ranges = MarkdownHighlighter.delimiterRanges(in: text)
+            let length = (text as NSString).length
+            for range in ranges {
+                XCTAssertLessThan(range.lowerBound, range.upperBound,
+                                  "empty range in \(text.debugDescription)")
+                XCTAssertGreaterThanOrEqual(range.lowerBound, 0,
+                                            "negative range in \(text.debugDescription)")
+                XCTAssertLessThanOrEqual(range.upperBound, length,
+                                         "range past end in \(text.debugDescription)")
+            }
+            for (a, b) in zip(ranges, ranges.dropFirst()) {
+                XCTAssertLessThanOrEqual(a.upperBound, b.lowerBound,
+                                         "overlap between \(a) and \(b) in \(text.debugDescription)")
+            }
         }
+    }
+
+    /// Deliberate trade: the scanner does not recurse into a span it has
+    /// already claimed, so a link inside a bold run keeps its own brackets on
+    /// screen — only the outer `**` is hidden. Nesting is rare in a sticky
+    /// note, and recursion would mean re-deriving offsets inside a span the
+    /// tokenizer has already consumed. Documented as a test so the day it
+    /// changes, it changes on purpose.
+    func testNestedMarkersOnlyHideTheOuterPair() {
+        XCTAssertEqual(MarkdownHighlighter.delimiterRanges(in: "**[a](u)**"), [0..<2, 8..<10])
+        XCTAssertEqual(MarkdownHighlighter.delimiterRanges(in: "**`a`**"), [0..<2, 5..<7])
+    }
+
+    /// A heading needs 1-3 hashes *and* a space; anything else is body text
+    /// and keeps every character visible.
+    func testNonHeadingHashLinesHideNothing() {
+        XCTAssertEqual(MarkdownHighlighter.delimiterRanges(in: "#### x"), [])
+        XCTAssertEqual(MarkdownHighlighter.delimiterRanges(in: "#"), [])
+        XCTAssertEqual(MarkdownHighlighter.delimiterRanges(in: "# "), [0..<2])
     }
 }

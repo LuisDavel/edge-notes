@@ -60,20 +60,22 @@ struct DeckView: View {
                 revealed = []
                 controller.setState(.collapsed)
             case (false, .open):
-                // The open note deliberately stays open. Closing it here is
-                // what made notes "vanish": every pointer exit counts —
-                // sliding sideways off the card, the panel resizing out from
-                // under the cursor, a menu or alert taking the pointer — and
-                // the note the user was reading disappeared. An open note is
-                // now dismissed only by Close or Esc.
+                // Nothing. The open note deliberately stays open, and the
+                // pointer leaving deliberately changes nothing else either.
                 //
-                // What *does* still happen on exit is handing activation
-                // back: clicking into the text activates EdgeNotes so ⌘Z/⌘A
-                // reach the editor, and without this the user would move the
-                // mouse back to their own app and find their keystrokes
-                // still going to the note. Focus follows the pointer out;
-                // the note does not.
-                EditorActivation.relinquish()
+                // Closing here is what made notes "vanish": every pointer
+                // exit counted — sliding sideways off the card, the panel
+                // resizing out from under the cursor, a menu or alert taking
+                // the pointer. An open note is now dismissed only by Close
+                // or Esc.
+                //
+                // Relinquishing *activation* here was no better: moving the
+                // mouse aside while typing is the most ordinary thing there
+                // is, and deactivating would leave the note on screen while
+                // every keystroke went to whatever app came forward.
+                // Activation is handed back in `NoteEditorView.onDisappear`,
+                // which is the moment the editor actually goes away.
+                break
             default:
                 break
             }

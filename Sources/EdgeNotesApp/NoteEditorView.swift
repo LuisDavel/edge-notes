@@ -6,7 +6,6 @@ struct NoteEditorView: View {
     let noteID: UUID
 
     @State private var text: String = ""
-    @State private var debouncer = Debouncer(delay: 0.25)
     /// Drives the cross-fade played when the editor is repointed at another
     /// note. Only ever animates back up to 1 — see `animateNoteSwap()`.
     @State private var contentOpacity: Double = 1
@@ -25,10 +24,11 @@ struct NoteEditorView: View {
                     .lineLimit(1)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 MarkdownTextView(text: $text, noteID: noteID, onEscape: { close() })
+                    // The debounce lives on the controller: a pending write
+                    // has to be flushable from outside this view, which is
+                    // the only way ⌘Q can save it (see DeckController).
                     .onChange(of: text) { _, newValue in
-                        debouncer.call { [weak controller] in
-                            try? controller?.store.updateBody(id: noteID, body: newValue, now: Date())
-                        }
+                        controller.scheduleBodySave(noteID: noteID, body: newValue)
                     }
                 // Not a Divider: a hairline at 6% black reads as a change of
                 // material rather than a rule drawn across the card.
@@ -61,12 +61,12 @@ struct NoteEditorView: View {
                 // Order is load-bearing: flush note A's pending autosave
                 // first, then repoint `text` at note B. The cross-fade is
                 // presentation only and runs after both.
-                debouncer.flush()
+                controller.flushPendingSave()
                 text = note.body
                 animateNoteSwap()
             }
             .onDisappear {
-                debouncer.flush()
+                controller.flushPendingSave()
                 // Hand activation back to whatever the user was in before
                 // they clicked into this note (no-op unless the click into
                 // the editor is what activated EdgeNotes).
@@ -105,7 +105,8 @@ struct NoteEditorView: View {
     /// Drops the content to 35% and 5pt to the right, then springs it back:
     /// a short cross-fade that makes a note switch legible without ever
     /// re-identifying the view (`.id(noteID)` would reset `@State`, including
-    /// the debouncer holding the unsaved edit).
+    /// the `text` buffer, and would tear the view down before the ordering
+    /// in `onChange(of: noteID)` could flush the outgoing note).
     private func animateNoteSwap() {
         guard !reduceMotion else {
             contentOpacity = 1
@@ -127,7 +128,7 @@ struct NoteEditorView: View {
     }
 
     private func close() {
-        debouncer.flush()
+        controller.flushPendingSave()
         controller.setState(.fanned)
     }
 

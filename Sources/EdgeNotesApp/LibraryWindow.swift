@@ -7,36 +7,22 @@ final class LibraryWindowController {
     private let store: NoteStore
     private var window: NSWindow?
 
-    private var appearanceObserver: NSObjectProtocol?
-
     init(store: NoteStore) {
         self.store = store
-        // The window is built once and kept (`if window == nil`), so it
-        // outlives any number of Light/Dark switches. `NSHostingView`
-        // resolves the SwiftUI `colorScheme` when it is installed and does
-        // not always re-resolve it for a cached hierarchy, which leaves the
-        // rows drawing for the *old* appearance on a surface AppKit has
-        // already repainted for the new one. Rebuilding the root view on a
-        // theme change is cheap (the store is the model; the view holds only
-        // the search field and filter) and removes the question entirely.
-        appearanceObserver = DistributedNotificationCenter.default().addObserver(
-            forName: Notification.Name("AppleInterfaceThemeChangedNotification"),
-            object: nil, queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in self?.rebuildContent() }
-        }
     }
 
-    deinit {
-        if let appearanceObserver {
-            DistributedNotificationCenter.default().removeObserver(appearanceObserver)
-        }
-    }
-
-    private func rebuildContent() {
-        guard let window else { return }
-        window.contentView = NSHostingView(rootView: LibraryView(store: store))
-    }
+    // NOTE: the window is built once and kept, and it is deliberately *not*
+    // rebuilt when the system switches between Light and Dark. An earlier
+    // version replaced the hosting view on
+    // `AppleInterfaceThemeChangedNotification` to guard against a cached
+    // `NSHostingView` resolving `colorScheme` once and never again. That
+    // guard cost more than it bought: rebuilding discards `LibraryView`'s
+    // state, so the search text, filter selection, scroll position and first
+    // responder all reset — on a manual switch and on macOS's automatic
+    // sunset switch alike. The legibility fix that matters is in
+    // `LibraryView` itself: text and the surface behind it now resolve from
+    // the same environment, so they cannot disagree whichever appearance
+    // wins.
 
     func show() {
         if window == nil {
