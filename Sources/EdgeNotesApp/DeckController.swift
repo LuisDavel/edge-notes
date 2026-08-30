@@ -54,7 +54,7 @@ final class DeckController: ObservableObject {
     }
 
     func reposition() {
-        guard let screen = NSScreen.main else { return }
+        guard let screen = NSScreen.screens.first else { return }
         let visible = screen.visibleFrame
         panel.setFrame(
             NSRect(x: visible.maxX - width, y: visible.minY, width: width, height: visible.height),
