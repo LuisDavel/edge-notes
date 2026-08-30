@@ -20,6 +20,8 @@ struct DeckView: View {
     @State private var isRevealing: Bool = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var addIsHovering: Bool = false
+    @State private var pillIsHovering: Bool = false
+    @State private var pendingFan: DispatchWorkItem?
 
     var body: some View {
         Group {
@@ -40,11 +42,20 @@ struct DeckView: View {
                 // straight off the + button would otherwise leave it stuck in
                 // its hovered look the next time the deck fans out.
                 addIsHovering = false
+                // Covers the (false, .collapsed) case too: a pointer that
+                // clips the screen edge and leaves again must cancel the
+                // pending fan and settle the pill back down.
+                cancelPendingFan()
+                withAnimation(Motion.resolved(Motion.hover, reduceMotion: reduceMotion)) {
+                    pillIsHovering = false
+                }
             }
             switch (hovering, controller.state) {
             case (true, .collapsed):
-                controller.setState(.fanned)
-                revealStaggered()
+                withAnimation(Motion.resolved(Motion.hover, reduceMotion: reduceMotion)) {
+                    pillIsHovering = true
+                }
+                scheduleFan()
             case (false, .fanned):
                 revealed = []
                 controller.setState(.collapsed)
@@ -83,9 +94,13 @@ struct DeckView: View {
             Spacer()
             VStack(spacing: 5) {
                 ForEach(controller.store.activeNotes()) { note in
+                    // The dashes thicken and brighten the moment the pointer
+                    // reaches the edge — the deck answers before it rearranges
+                    // itself (the fan follows Motion.pillHoverLead later).
                     Capsule()
                         .fill(note.meta.color.swiftUIColor)
-                        .frame(width: 4, height: 14)
+                        .frame(width: pillIsHovering ? 6 : 4, height: 14)
+                        .opacity(pillIsHovering ? 1 : 0.85)
                 }
             }
             .padding(.vertical, 8)
@@ -145,6 +160,35 @@ struct DeckView: View {
         .buttonStyle(SpringButtonStyle(pressedScale: 0.88))
         .hoverSpring($addIsHovering)
         .padding(.top, 8)
+    }
+
+    /// Opens the fan one short beat after the pointer arrives, so the pill's
+    /// hover response is actually visible before the pill is replaced. The
+    /// lead time doubles as a guard against fanning open when the pointer is
+    /// merely crossing the screen edge on its way somewhere else.
+    private func scheduleFan() {
+        cancelPendingFan()
+        guard !reduceMotion else {
+            openFan()
+            return
+        }
+        let item = DispatchWorkItem { openFan() }
+        pendingFan = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + Motion.pillHoverLead, execute: item)
+    }
+
+    private func cancelPendingFan() {
+        pendingFan?.cancel()
+        pendingFan = nil
+    }
+
+    private func openFan() {
+        pendingFan = nil
+        // The pointer may have left, or the deck may have been opened another
+        // way, in the meantime.
+        guard controller.state == .collapsed else { return }
+        controller.setState(.fanned)
+        revealStaggered()
     }
 
     private func revealStaggered() {

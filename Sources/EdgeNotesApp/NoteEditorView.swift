@@ -7,6 +7,11 @@ struct NoteEditorView: View {
 
     @State private var text: String = ""
     @State private var debouncer = Debouncer(delay: 0.25)
+    /// Drives the cross-fade played when the editor is repointed at another
+    /// note. Only ever animates back up to 1 — see `animateNoteSwap()`.
+    @State private var contentOpacity: Double = 1
+    @State private var contentOffset: CGFloat = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var note: Note? {
         controller.store.notes.first { $0.id == noteID }
@@ -15,26 +20,27 @@ struct NoteEditorView: View {
     var body: some View {
         if let note {
             VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(note.meta.title)
-                        .font(.system(size: 14, weight: .bold))
-                        .lineLimit(1)
-                    Spacer(minLength: 8)
-                    Text("⌘B ⌘I ⌘E ⌘K")
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundStyle(.black.opacity(0.32))
-                        .fixedSize()
-                }
+                Text(note.meta.title)
+                    .font(.system(size: 14, weight: .bold))
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 MarkdownTextView(text: $text, noteID: noteID)
                     .onChange(of: text) { _, newValue in
                         debouncer.call { [weak controller] in
                             try? controller?.store.updateBody(id: noteID, body: newValue, now: Date())
                         }
                     }
-                Divider()
-                    .opacity(0.3)
+                // Not a Divider: a hairline at 6% black reads as a change of
+                // material rather than a rule drawn across the card.
+                Rectangle()
+                    .fill(.black.opacity(0.06))
+                    .frame(height: 1)
                 footer(for: note)
             }
+            // Applied before `.padding`/`.background`, so the card itself
+            // holds still while only its contents cross-fade on a note swap.
+            .opacity(contentOpacity)
+            .offset(x: contentOffset)
             .padding(14)
             .frame(width: 360, height: 420)
             .background(
@@ -52,8 +58,12 @@ struct NoteEditorView: View {
             // view instance and reacting to `noteID` here makes the order
             // explicit: flush A, then load B.
             .onChange(of: noteID) { _, _ in
+                // Order is load-bearing: flush note A's pending autosave
+                // first, then repoint `text` at note B. The cross-fade is
+                // presentation only and runs after both.
                 debouncer.flush()
                 text = note.body
+                animateNoteSwap()
             }
             .onDisappear { debouncer.flush() }
             .onExitCommand { close() }   // Esc
@@ -75,7 +85,7 @@ struct NoteEditorView: View {
                 }
             }
             Spacer(minLength: 4)
-            FooterButton(title: "Delete", tint: Color(red: 0.62, green: 0.09, blue: 0.09)) {
+            FooterButton(title: "Delete", tint: .red.opacity(0.85)) {
                 confirmDelete()
             }
             FooterButton(title: "Mark complete") {
@@ -83,6 +93,30 @@ struct NoteEditorView: View {
                 close()
             }
             FooterButton(title: "Close") { close() }
+        }
+    }
+
+    /// Drops the content to 35% and 5pt to the right, then springs it back:
+    /// a short cross-fade that makes a note switch legible without ever
+    /// re-identifying the view (`.id(noteID)` would reset `@State`, including
+    /// the debouncer holding the unsaved edit).
+    private func animateNoteSwap() {
+        guard !reduceMotion else {
+            contentOpacity = 1
+            contentOffset = 0
+            return
+        }
+        contentOpacity = 0.35
+        contentOffset = 5
+        // The dip and the animation back must land in *different* update
+        // cycles. Setting 0.35 and then animating to 1 synchronously lets
+        // SwiftUI coalesce both into a single render that starts from 1 —
+        // the dip would never be drawn and the swap would look instant.
+        DispatchQueue.main.async {
+            withAnimation(Motion.contentSwap) {
+                contentOpacity = 1
+                contentOffset = 0
+            }
         }
     }
 
@@ -158,13 +192,16 @@ struct FooterButton: View {
                 .foregroundStyle(tint)
                 .padding(.horizontal, 6)
                 .padding(.vertical, 3.5)
+                // Lighter than the card, never darker: the buttons sit on
+                // top of the note colour as a translucent white wash that
+                // gains opacity on hover.
                 .background(
                     Capsule(style: .continuous)
-                        .fill(.black.opacity(isHovering ? 0.13 : 0.06))
+                        .fill(.white.opacity(isHovering ? 0.62 : 0.35))
                 )
                 .overlay(
                     Capsule(style: .continuous)
-                        .stroke(.black.opacity(isHovering ? 0.22 : 0.12), lineWidth: 0.5)
+                        .stroke(.white.opacity(isHovering ? 0.85 : 0.5), lineWidth: 0.5)
                 )
                 .contentShape(Capsule(style: .continuous))
         }

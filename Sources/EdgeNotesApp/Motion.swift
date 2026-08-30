@@ -25,6 +25,14 @@ enum Motion {
     /// Per-note stagger for the fan reveal.
     static let tabStagger: Double = 0.045
 
+    /// How long the collapsed pill gets to acknowledge the pointer before
+    /// the fan opens over it. Short enough to read as responsiveness rather
+    /// than lag, long enough for the dash growth to be seen.
+    static let pillHoverLead: Double = 0.10
+
+    /// Content cross-fade when the open editor is repointed at another note.
+    static let contentSwap = Animation.easeOut(duration: 0.22)
+
     /// Returns `nil` (i.e. "apply the change immediately") when the user has
     /// asked for reduced motion. `withAnimation` and `.animation(_:value:)`
     /// both accept an optional `Animation`, so this is the single gate every
