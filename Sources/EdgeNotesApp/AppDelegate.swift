@@ -9,6 +9,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var libraryController: LibraryWindowController!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Installed first, and unconditionally: even the failure path below
+        // puts a modal alert on screen, and that alert wants ⌘C/⌘Q to work.
+        // The menu is never displayed (accessory apps have no menu bar) — it
+        // exists so the standard editing key equivalents get dispatched at
+        // all. See MainMenu.
+        MainMenu.install(into: NSApp)
+
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("EdgeNotes/notes")
         do {
