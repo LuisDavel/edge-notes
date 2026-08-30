@@ -43,10 +43,16 @@ struct NoteEditorView: View {
             .offset(x: contentOffset)
             .padding(14)
             .frame(width: 360, height: 420)
+            // Softer and closer to straight down than it was. The old
+            // `0.25 / radius 12 / x: -4` reached about 30pt to the left of
+            // the card, which is further than the panel is wide there, so
+            // the window edge chopped the blur off mid-gradient — the grey
+            // halo. `DeckController.cardShadowGutter` now reserves the room,
+            // and these values fade to nothing inside it.
             .background(
                 RoundedRectangle(cornerRadius: 14)
                     .fill(note.meta.color.swiftUIColor)
-                    .shadow(color: .black.opacity(0.25), radius: 12, x: -4, y: 4)
+                    .shadow(color: .black.opacity(0.20), radius: 10, x: -2, y: 3)
             )
             .onAppear { text = note.body }
             // NOTE: deliberately *not* `.id(noteID)`. Re-identifying the view

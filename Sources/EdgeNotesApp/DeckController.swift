@@ -29,7 +29,21 @@ final class DeckController: ObservableObject {
     // Larguras por estado; altura sempre a área visível da tela.
     static let collapsedWidth: CGFloat = 28   // pill 12pt + margem de sombra
     static let fannedWidth: CGFloat = 160
-    static let openWidth: CGFloat = 400
+
+    /// Transparent gutter kept to the *left* of the open card so its drop
+    /// shadow can fade all the way to nothing inside the panel.
+    ///
+    /// This is the halo. A window clips everything it draws to its own
+    /// bounds, and the open panel used to be exactly as wide as its contents:
+    /// 360 (card) + 8 (trailing pad) + 30 (tab column) = 398 of 400pt, i.e.
+    /// 2pt of slack. The card's shadow needs roughly 27 (measured: a SwiftUI
+    /// `radius: r` shadow is still faintly painting ~2.5·r out from the
+    /// shape). It was therefore sliced off by the window edge while still
+    /// around 10% black — a blur that stops in a straight vertical line the
+    /// full height of the card, which is exactly what reads as a grey frame
+    /// rather than a shadow.
+    static let cardShadowGutter: CGFloat = 34
+    static let openWidth: CGFloat = 360 + 8 + 30 + cardShadowGutter
 
     init(store: NoteStore) {
         self.store = store
