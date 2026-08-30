@@ -37,7 +37,7 @@ struct LibraryView: View {
                     .textFieldStyle(.roundedBorder)
                 Text("\(filtered.count) notes")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color(nsColor: .secondaryLabelColor))
                 Button("Import…") { importFiles() }
             }
             Picker("", selection: $filter) {
@@ -52,20 +52,25 @@ struct LibraryView: View {
                         .fill(note.meta.color.swiftUIColor)
                         .frame(width: 4, height: 34)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(note.meta.title).fontWeight(.semibold)
+                        Text(note.meta.title)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(Color(nsColor: .labelColor))
                         Text(note.body.replacingOccurrences(of: "\n", with: " ").prefix(80))
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color(nsColor: .secondaryLabelColor))
                             .lineLimit(1)
                     }
-                    Spacer()
+                    Spacer(minLength: 8)
+                    // Was followed by a live `Text(updatedAt, style: .relative)`,
+                    // which SwiftUI renders as a self-updating clock — the
+                    // rows ticked "20 seg", "21 seg", … like a stopwatch.
+                    // Removed outright rather than replaced by a static date:
+                    // the badge is the row's trailing element now.
                     Text(note.meta.status == .active ? "ACTIVE" : "ARCHIVED")
                         .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(Color(nsColor: .labelColor))
                         .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(Capsule().fill(.quaternary))
-                    Text(note.meta.updatedAt, style: .relative)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .background(Capsule().fill(Color(nsColor: .quaternaryLabelColor)))
                 }
                 .contextMenu {
                     if note.meta.status == .active {
@@ -78,8 +83,17 @@ struct LibraryView: View {
                     Button("Delete…", role: .destructive) { confirmDelete(note) }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(Color(nsColor: .controlBackgroundColor))
         }
         .padding(12)
+        // Painted from SwiftUI rather than left to the window, so the row
+        // text and the surface behind it can never come from two different
+        // appearances: whatever `colorScheme` this view resolves to, the
+        // background resolves to the matching one. That is the failure the
+        // dark-mode report describes — rows whose text renders for one
+        // appearance on a surface drawn for the other.
+        .background(Color(nsColor: .windowBackgroundColor))
         .onReceive(NotificationCenter.default.publisher(for: .edgeNotesStoreChanged)) { _ in
             version += 1
         }
