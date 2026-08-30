@@ -18,6 +18,8 @@ struct DeckView: View {
     @ObservedObject var controller: DeckController
     @State private var revealed: Set<UUID> = []
     @State private var isRevealing: Bool = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var addIsHovering: Bool = false
 
     var body: some View {
         Group {
@@ -32,6 +34,13 @@ struct DeckView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
         .onHover { hovering in
+            if !hovering {
+                // `addIsHovering` lives on DeckView, which outlives the
+                // fanned/collapsed switch, so a pointer that leaves the panel
+                // straight off the + button would otherwise leave it stuck in
+                // its hovered look the next time the deck fans out.
+                addIsHovering = false
+            }
             switch (hovering, controller.state) {
             case (true, .collapsed):
                 controller.setState(.fanned)
@@ -126,20 +135,32 @@ struct DeckView: View {
         } label: {
             Image(systemName: "plus")
                 .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.black.opacity(addIsHovering ? 0.85 : 0.6))
                 .frame(width: 22, height: 22)
                 .background(Circle().fill(.regularMaterial))
+                .overlay(Circle().stroke(.black.opacity(addIsHovering ? 0.18 : 0), lineWidth: 0.5))
+                .scaleEffect(addIsHovering ? 1.12 : 1)
+                .contentShape(Circle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(SpringButtonStyle(pressedScale: 0.88))
+        .hoverSpring($addIsHovering)
         .padding(.top, 8)
     }
 
     private func revealStaggered() {
         revealed = []
         let notes = controller.store.activeNotes()
+        guard !reduceMotion else {
+            // No entrance animation at all: show every tab immediately.
+            // `isRevealing` stays false so nothing is ever gated on
+            // `revealed`, which keeps newly created notes visible too.
+            isRevealing = false
+            return
+        }
         isRevealing = !notes.isEmpty
         for (index, note) in notes.enumerated() {
-            DispatchQueue.main.asyncAfter(deadline: .now() + Double(index) * 0.045) {
-                withAnimation(.spring(duration: 0.28)) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(index) * Motion.tabStagger) {
+                withAnimation(Motion.tab) {
                     _ = revealed.insert(note.id)
                 }
                 if index == notes.count - 1 {
@@ -153,11 +174,13 @@ struct DeckView: View {
 struct NoteTab: View {
     let note: Note
 
+    @State private var isHovering = false
+
     var body: some View {
         Text(note.meta.title.prefix(10).uppercased())
             .font(.system(size: 9, weight: .semibold))
             .kerning(0.8)
-            .foregroundStyle(.black.opacity(0.55))
+            .foregroundStyle(.black.opacity(isHovering ? 0.8 : 0.55))
             .fixedSize()
             .rotationEffect(.degrees(90))
             .frame(width: 26, height: 88)
@@ -166,8 +189,26 @@ struct NoteTab: View {
                     topLeadingRadius: 8, bottomLeadingRadius: 8,
                     bottomTrailingRadius: 0, topTrailingRadius: 0)
                 .fill(note.meta.color.swiftUIColor)
-                .shadow(color: .black.opacity(0.18), radius: 4, x: -2, y: 1)
+                .overlay(
+                    UnevenRoundedRectangle(
+                        topLeadingRadius: 8, bottomLeadingRadius: 8,
+                        bottomTrailingRadius: 0, topTrailingRadius: 0)
+                    .fill(.white.opacity(isHovering ? 0.22 : 0))
+                )
+                .shadow(color: .black.opacity(isHovering ? 0.28 : 0.18),
+                        radius: isHovering ? 7 : 4,
+                        x: isHovering ? -4 : -2, y: 1)
             )
+            // Slides a few points out of the screen edge on hover: the tab
+            // leans toward the pointer instead of just changing colour.
+            .offset(x: isHovering ? -5 : 0)
+            // The offset must not drag the hit area with it: re-wrapping in
+            // a fixed frame and taking the content shape *after* the offset
+            // keeps the hover region anchored, so a pointer resting near the
+            // tab's right edge can't oscillate in and out of hover as the
+            // tab slides away from it.
+            .frame(width: 26, height: 88)
             .contentShape(Rectangle())
+            .hoverSpring($isHovering)
     }
 }
