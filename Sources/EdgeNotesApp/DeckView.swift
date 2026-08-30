@@ -26,8 +26,13 @@ struct DeckView: View {
             case .fanned:
                 fannedDeck
             case .open(let noteID):
-                // Editor completo chega na Task 8; por ora volta pro fan.
-                fannedDeck.onAppear { _ = noteID }
+                HStack(alignment: .top, spacing: 0) {
+                    Spacer()
+                    NoteEditorView(controller: controller, noteID: noteID)
+                        .padding(.trailing, 8)
+                        .padding(.top, 60)
+                    fannedTabsColumn
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
@@ -66,6 +71,13 @@ struct DeckView: View {
     private var fannedDeck: some View {
         VStack(alignment: .trailing, spacing: 6) {
             Spacer()
+            fannedTabsColumn
+            Spacer()
+        }
+    }
+
+    private var fannedTabsColumn: some View {
+        VStack(alignment: .trailing, spacing: 6) {
             ForEach(controller.store.activeNotes()) { note in
                 NoteTab(note: note)
                     .opacity(revealed.contains(note.id) ? 1 : 0)
@@ -73,7 +85,6 @@ struct DeckView: View {
                     .onTapGesture { controller.setState(.open(noteID: note.id)) }
             }
             addButton
-            Spacer()
         }
         .padding(.trailing, 4)
     }
