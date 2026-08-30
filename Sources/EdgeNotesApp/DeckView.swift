@@ -60,10 +60,20 @@ struct DeckView: View {
                 revealed = []
                 controller.setState(.collapsed)
             case (false, .open):
-                // NoteEditorView flushes its pending autosave in onDisappear,
-                // so it's safe to collapse the open note back into the fan
-                // once the mouse leaves the panel.
-                controller.setState(.fanned)
+                // The open note deliberately stays open. Closing it here is
+                // what made notes "vanish": every pointer exit counts —
+                // sliding sideways off the card, the panel resizing out from
+                // under the cursor, a menu or alert taking the pointer — and
+                // the note the user was reading disappeared. An open note is
+                // now dismissed only by Close or Esc.
+                //
+                // What *does* still happen on exit is handing activation
+                // back: clicking into the text activates EdgeNotes so ⌘Z/⌘A
+                // reach the editor, and without this the user would move the
+                // mouse back to their own app and find their keystrokes
+                // still going to the note. Focus follows the pointer out;
+                // the note does not.
+                EditorActivation.relinquish()
             default:
                 break
             }
