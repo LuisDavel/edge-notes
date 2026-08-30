@@ -20,13 +20,6 @@ struct NoteEditorView: View {
                         .font(.system(size: 14, weight: .bold))
                     Spacer()
                     Menu {
-                        Menu("Color") {
-                            ForEach(NoteColor.allCases, id: \.self) { color in
-                                Button(color.rawValue.capitalized) {
-                                    try? controller.store.setColor(id: noteID, color: color, now: Date())
-                                }
-                            }
-                        }
                         Button("Archive") {
                             try? controller.store.setStatus(id: noteID, status: .archived, now: Date())
                             close()
@@ -50,6 +43,28 @@ struct NoteEditorView: View {
                             try? controller?.store.updateBody(id: noteID, body: newValue, now: Date())
                         }
                     }
+                Divider()
+                    .opacity(0.3)
+                HStack(spacing: 6) {
+                    ForEach(NoteColor.allCases, id: \.self) { color in
+                        Circle()
+                            .fill(color.swiftUIColor)
+                            .frame(width: 16, height: 16)
+                            .overlay(
+                                Circle()
+                                    .stroke(.black.opacity(0.4), lineWidth: 2)
+                                    .opacity(note.meta.color == color ? 1 : 0)
+                            )
+                            .contentShape(Circle())
+                            .onTapGesture {
+                                try? controller.store.setColor(id: noteID, color: color, now: Date())
+                            }
+                    }
+                    Spacer()
+                    Text("⌘B ⌘I ⌘E ⌘K")
+                        .font(.caption2)
+                        .foregroundStyle(.black.opacity(0.35))
+                }
             }
             .padding(14)
             .frame(width: 360, height: 420)
