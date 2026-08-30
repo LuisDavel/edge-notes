@@ -9,7 +9,7 @@ public final class FolderWatcher {
         fd = open(url.path, O_EVTONLY)
         guard fd >= 0 else { return nil }
         source = DispatchSource.makeFileSystemObjectSource(
-            fileDescriptor: fd, eventMask: .write, queue: .main)
+            fileDescriptor: fd, eventMask: [.write, .extend, .attrib, .link, .rename, .delete], queue: .main)
         let debouncer = self.debouncer
         source.setEventHandler {
             debouncer.call(onChange)
