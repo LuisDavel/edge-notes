@@ -24,7 +24,7 @@ struct NoteEditorView: View {
                     .font(.system(size: 14, weight: .bold))
                     .lineLimit(1)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                MarkdownTextView(text: $text, noteID: noteID)
+                MarkdownTextView(text: $text, noteID: noteID, onEscape: { close() })
                     .onChange(of: text) { _, newValue in
                         debouncer.call { [weak controller] in
                             try? controller?.store.updateBody(id: noteID, body: newValue, now: Date())

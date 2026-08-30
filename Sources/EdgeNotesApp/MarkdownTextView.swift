@@ -39,6 +39,110 @@ enum EditorActivation {
     }
 }
 
+/// Hides the markdown markers — `**`, `# `, `` ` ``, `[`/`](url)` — without
+/// touching a single character of the note.
+///
+/// **Why a layout-manager delegate and not attributes.** The obvious routes
+/// all fail in ways that matter here:
+///
+/// * Rewriting the text storage (deleting the markers) is out of the
+///   question — the note file *is* the text, and an editor that silently
+///   edits what it saves is a data-loss bug, not a preview.
+/// * `.foregroundColor = .clear` leaves the markers occupying their full
+///   width, so `**bold**` renders as `  bold  ` with gaps.
+/// * A ~0pt `.font` on the marker range does collapse the width, but it is a
+///   real font change: it drags the line height around and leaves the
+///   insertion point a sliver tall wherever it lands on a marker.
+/// * `setTemporaryAttributes` is explicitly documented not to affect layout,
+///   so it cannot collapse anything.
+///
+/// What does work is telling glyph generation that these characters are not
+/// to be drawn. Two properties can do that, and the difference between them
+/// was decided by measurement, not by the docs:
+///
+/// * `.null` removes the glyphs from the glyph stream. Rendering is perfect
+///   and mid-line markers behave, but a null run at the *start of a line*
+///   corrupts the glyph↔line-fragment mapping: with `# ` hidden, ⌘→ from
+///   line 1 landed on line 2, and ⌘← from line 2 landed at the start of the
+///   document. Since every heading marker is at a line start, `.null` is
+///   unusable here.
+/// * `.controlCharacter` keeps the glyph in the stream and lets this
+///   delegate give it `.zeroAdvancement`. Measured against the same probe,
+///   every navigation case is exact: ⌘←/⌘→ per line, ⌥←/⌥→ per word, ↓
+///   across lines, ⌘A, and double-click word selection all report the same
+///   character offsets as an unhidden text view.
+///
+/// Either way the text storage is untouched, so what is typed, copied and
+/// saved is always the full markdown. The cursor does step through a hidden
+/// marker (two invisible presses to cross a `**`), which is the same
+/// behaviour Bear and Obsidian have.
+final class MarkdownDelimiterHider: NSObject, NSLayoutManagerDelegate {
+
+    /// Ordered, non-overlapping UTF-16 character ranges to render at zero
+    /// width. Set by `MarkdownTextView.applyHighlighting`.
+    var hiddenRanges: [Range<Int>] = []
+
+    /// Ranges arrive sorted and disjoint from `MarkdownHighlighter`, and this
+    /// is asked once per glyph over the whole document on every keystroke, so
+    /// it binary-searches rather than scanning.
+    private func isHidden(_ characterIndex: Int) -> Bool {
+        var low = 0
+        var high = hiddenRanges.count - 1
+        while low <= high {
+            let mid = (low + high) / 2
+            let range = hiddenRanges[mid]
+            if characterIndex < range.lowerBound {
+                high = mid - 1
+            } else if characterIndex >= range.upperBound {
+                low = mid + 1
+            } else {
+                return true
+            }
+        }
+        return false
+    }
+
+    func layoutManager(_ layoutManager: NSLayoutManager,
+                       shouldGenerateGlyphs glyphs: UnsafePointer<CGGlyph>,
+                       properties props: UnsafePointer<NSLayoutManager.GlyphProperty>,
+                       characterIndexes charIndexes: UnsafePointer<Int>,
+                       font: NSFont,
+                       forGlyphRange glyphRange: NSRange) -> Int {
+        guard !hiddenRanges.isEmpty else { return 0 }
+
+        var properties = [NSLayoutManager.GlyphProperty](repeating: [], count: glyphRange.length)
+        var changed = false
+        for offset in 0..<glyphRange.length {
+            if isHidden(charIndexes[offset]) {
+                properties[offset] = .controlCharacter
+                changed = true
+            } else {
+                properties[offset] = props[offset]
+            }
+        }
+        // Returning 0 means "use the defaults you computed", which is both
+        // cheaper and safer than re-submitting an unchanged run.
+        guard changed else { return 0 }
+
+        properties.withUnsafeBufferPointer { buffer in
+            layoutManager.setGlyphs(glyphs,
+                                    properties: buffer.baseAddress!,
+                                    characterIndexes: charIndexes,
+                                    font: font,
+                                    forGlyphRange: glyphRange)
+        }
+        return glyphRange.length
+    }
+
+    /// The second half of the pair: the glyphs marked above are drawn as
+    /// nothing and advance the pen by nothing.
+    func layoutManager(_ layoutManager: NSLayoutManager,
+                       shouldUse action: NSLayoutManager.ControlCharacterAction,
+                       forControlCharacterAt charIndex: Int) -> NSLayoutManager.ControlCharacterAction {
+        isHidden(charIndex) ? .zeroAdvancement : action
+    }
+}
+
 /// `NSTextView` subclass for the note editor.
 ///
 /// Two responsibilities beyond stock `NSTextView`:
@@ -62,6 +166,24 @@ enum EditorActivation {
 /// double- and triple-click selection) is stock AppKit behaviour and is
 /// deliberately not intercepted.
 final class MarkdownNSTextView: NSTextView {
+
+    /// Retained here because `NSLayoutManager.delegate` is a weak reference.
+    let delimiterHider = MarkdownDelimiterHider()
+
+    /// Invoked for Esc. `NSTextView` maps Esc to `complete:` (word
+    /// completion), so without this override the key would be swallowed by
+    /// the editor and "Esc closes the note" — now one of only two ways to
+    /// dismiss an open note — would silently stop working the moment the
+    /// text view took focus.
+    var escapeHandler: (() -> Void)?
+
+    /// Whether this view currently holds focus. Tracked rather than read
+    /// back from `window.firstResponder`, because AppKit only installs the
+    /// new first responder *after* `becomeFirstResponder()` returns — asking
+    /// the window from inside that call would still report the old one and
+    /// the first highlight pass after focus would hide the cursor line's own
+    /// markers.
+    private(set) var isEditingFocused = false
 
     /// Actions this view implements for the Format menu. Listed so
     /// `validateUserInterfaceItem(_:)` can answer for them explicitly instead
@@ -90,6 +212,39 @@ final class MarkdownNSTextView: NSTextView {
     override func mouseDown(with event: NSEvent) {
         EditorActivation.activateForEditing()
         super.mouseDown(with: event)
+    }
+
+    override func cancelOperation(_ sender: Any?) {
+        guard let escapeHandler else {
+            super.cancelOperation(sender)
+            return
+        }
+        escapeHandler()
+    }
+
+    // MARK: - Focus
+
+    // The markers are shown on the cursor's line only while this view is
+    // actually being edited; an unfocused note renders fully formatted, the
+    // way Bear and Obsidian do. Both transitions therefore have to
+    // re-run the highlight pass.
+
+    override func becomeFirstResponder() -> Bool {
+        let became = super.becomeFirstResponder()
+        if became {
+            isEditingFocused = true
+            MarkdownTextView.applyHighlighting(to: self)
+        }
+        return became
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let resigned = super.resignFirstResponder()
+        if resigned {
+            isEditingFocused = false
+            MarkdownTextView.applyHighlighting(to: self)
+        }
+        return resigned
     }
 
     // MARK: - Markdown commands
@@ -208,10 +363,30 @@ struct MarkdownTextView: NSViewRepresentable {
     /// cleared — otherwise ⌘Z after switching notes could pop an edit from
     /// the previous note against this one's buffer.
     let noteID: UUID
+    /// Esc has to be handed back to the note editor explicitly — see
+    /// `MarkdownNSTextView.cancelOperation(_:)`.
+    let onEscape: () -> Void
 
     func makeNSView(context: Context) -> NSScrollView {
         context.coordinator.currentNoteID = noteID
-        let textView = MarkdownNSTextView()
+
+        // An explicit TextKit 1 stack. `NSTextView()` gives a TextKit 2 stack
+        // on macOS 12+, and TextKit 2 has no glyph-generation hook — the
+        // marker hiding in `MarkdownDelimiterHider` is an `NSLayoutManager`
+        // delegate and needs the older stack. Everything the editor relies on
+        // (find bar, continuous spell checking, undo, word/line motion) is
+        // TextKit 1 behaviour to begin with.
+        let storage = NSTextStorage()
+        let layoutManager = NSLayoutManager()
+        storage.addLayoutManager(layoutManager)
+        let container = NSTextContainer(
+            size: NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
+        container.widthTracksTextView = true
+        layoutManager.addTextContainer(container)
+
+        let textView = MarkdownNSTextView(frame: .zero, textContainer: container)
+        layoutManager.delegate = textView.delimiterHider
+        textView.escapeHandler = onEscape
         textView.delegate = context.coordinator
         textView.isRichText = false
         textView.allowsUndo = true
@@ -245,8 +420,6 @@ struct MarkdownTextView: NSViewRepresentable {
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
         textView.autoresizingMask = [.width]
-        textView.textContainer?.widthTracksTextView = true
-        textView.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
         textView.string = text
 
         let scrollView = NSScrollView()
@@ -265,6 +438,19 @@ struct MarkdownTextView: NSViewRepresentable {
         textView.isIncrementalSearchingEnabled = true
 
         Self.applyHighlighting(to: textView)
+
+        // Opening a note is a click on its tab, and after a click on a
+        // non-activating panel the panel is key — so the editor can take
+        // first responder and be ready to type, exactly like clicking a note
+        // in Notes. This is safe to do unconditionally: `makeFirstResponder`
+        // moves focus *within* this panel and never activates the app, so
+        // hovering the deck still cannot pull focus off the frontmost app.
+        // Deferred one turn because the view has no window yet.
+        DispatchQueue.main.async { [weak textView] in
+            guard let textView, let window = textView.window else { return }
+            window.makeFirstResponder(textView)
+        }
+
         return scrollView
     }
 
@@ -278,6 +464,21 @@ struct MarkdownTextView: NSViewRepresentable {
             // would otherwise pop a stale edit against the wrong note).
             textView.undoManager?.removeAllActions(withTarget: textView)
         }
+        // Rebound every pass: the closure captures the current note editor.
+        textView.escapeHandler = onEscape
+
+        // A click in the blank space under the last line has to put the
+        // cursor at the end of the text, the way Notes does. That only
+        // happens if the text view itself extends to the bottom of the
+        // scroll view — otherwise the click lands on the clip view and does
+        // nothing. `minSize` is what `isVerticallyResizable` sizing floors
+        // at, and it is only known once the scroll view has been laid out.
+        let visibleHeight = scrollView.contentSize.height
+        if visibleHeight > 0, textView.minSize.height != visibleHeight {
+            textView.minSize = NSSize(width: 0, height: visibleHeight)
+            textView.sizeToFit()
+        }
+
         if textView.string != text {
             textView.string = text
             Self.applyHighlighting(to: textView)
@@ -299,6 +500,23 @@ struct MarkdownTextView: NSViewRepresentable {
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? MarkdownNSTextView else { return }
             text.wrappedValue = textView.string
+            lastCursorParagraph = nil   // the text moved; the cached line is stale
+            MarkdownTextView.applyHighlighting(to: textView)
+        }
+
+        /// The paragraph the markers were last left visible on, so an
+        /// ordinary cursor move *within* a line does not re-run the highlight
+        /// pass. Only crossing into another paragraph changes what is hidden.
+        private var lastCursorParagraph: NSRange?
+
+        func textViewDidChangeSelection(_ notification: Notification) {
+            guard let textView = notification.object as? MarkdownNSTextView else { return }
+            let paragraph = (textView.string as NSString)
+                .paragraphRange(for: textView.selectedRange())
+            guard paragraph != lastCursorParagraph else { return }
+            lastCursorParagraph = paragraph
+            // Attribute-only, outside `shouldChangeText`, so this never
+            // registers with the undo manager and never moves the selection.
             MarkdownTextView.applyHighlighting(to: textView)
         }
     }
@@ -312,6 +530,8 @@ struct MarkdownTextView: NSViewRepresentable {
         let fullRange = NSRange(location: 0, length: (text as NSString).length)
         let baseFont = NSFont.systemFont(ofSize: 13)
         let baseColor = NSColor.black.withAlphaComponent(0.75)
+
+        updateHiddenDelimiters(in: textView, text: text)
 
         storage.beginEditing()
         storage.setAttributes([.font: baseFont, .foregroundColor: baseColor], range: fullRange)
@@ -344,6 +564,44 @@ struct MarkdownTextView: NSViewRepresentable {
             }
         }
         storage.endEditing()
+
+        // Attributes alone do not re-run glyph generation when no font
+        // changed, and the hidden set may have moved with the cursor — ask
+        // for the glyphs back explicitly. The attribute pass above is what
+        // brings the redraw with it.
+        if let layoutManager = textView.layoutManager {
+            layoutManager.invalidateGlyphs(forCharacterRange: fullRange,
+                                           changeInLength: 0,
+                                           actualCharacterRange: nil)
+            layoutManager.invalidateLayout(forCharacterRange: fullRange,
+                                           actualCharacterRange: nil)
+        }
+    }
+
+    /// Decides which markers are invisible right now: all of them, minus the
+    /// ones on the paragraph holding the cursor, so the line being edited
+    /// always shows its own syntax and can be typed into.
+    ///
+    /// While the editor does not have focus nothing is exempt — an unopened
+    /// note reads as finished text rather than as text with one raw line in
+    /// the middle of it.
+    private static func updateHiddenDelimiters(in textView: NSTextView, text: String) {
+        guard let editor = textView as? MarkdownNSTextView else { return }
+        let hider = editor.delimiterHider
+        let delimiters = MarkdownHighlighter.delimiterRanges(in: text)
+
+        guard editor.isEditingFocused else {
+            hider.hiddenRanges = delimiters
+            return
+        }
+
+        let paragraph = (text as NSString).paragraphRange(for: textView.selectedRange())
+        let cursorLine = paragraph.location..<NSMaxRange(paragraph)
+        hider.hiddenRanges = delimiters.filter { range in
+            // A delimiter never straddles a paragraph break, so testing the
+            // lower bound is enough to place it on one side or the other.
+            !cursorLine.contains(range.lowerBound)
+        }
     }
 
     private static func italicFont(size: CGFloat) -> NSFont {
