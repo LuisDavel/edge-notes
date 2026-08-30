@@ -96,7 +96,7 @@ struct LibraryView: View {
         panel.allowsMultipleSelection = true
         if panel.runModal() == .OK {
             for url in panel.urls {
-                try? store.importFile(at: url, now: Date())
+                _ = try? store.importFile(at: url, now: Date())
             }
             version += 1
         }

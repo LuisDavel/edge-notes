@@ -17,6 +17,7 @@ extension NoteColor {
 struct DeckView: View {
     @ObservedObject var controller: DeckController
     @State private var revealed: Set<UUID> = []
+    @State private var isRevealing: Bool = false
 
     var body: some View {
         Group {
@@ -26,13 +27,7 @@ struct DeckView: View {
             case .fanned:
                 fannedDeck
             case .open(let noteID):
-                HStack(alignment: .top, spacing: 0) {
-                    Spacer()
-                    NoteEditorView(controller: controller, noteID: noteID)
-                        .padding(.trailing, 8)
-                        .padding(.top, 60)
-                    fannedTabsColumn
-                }
+                openView(noteID: noteID)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
@@ -44,9 +39,33 @@ struct DeckView: View {
             case (false, .fanned):
                 revealed = []
                 controller.setState(.collapsed)
+            case (false, .open):
+                // NoteEditorView flushes its pending autosave in onDisappear,
+                // so it's safe to collapse the open note back into the fan
+                // once the mouse leaves the panel.
+                controller.setState(.fanned)
             default:
                 break
             }
+        }
+    }
+
+    @ViewBuilder
+    private func openView(noteID: UUID) -> some View {
+        if controller.store.notes.contains(where: { $0.id == noteID && $0.meta.status == .active }) {
+            HStack(alignment: .top, spacing: 0) {
+                Spacer()
+                NoteEditorView(controller: controller, noteID: noteID)
+                    .padding(.trailing, 8)
+                    .padding(.top, 60)
+                fannedTabsColumn
+            }
+        } else {
+            // The open note was deleted or archived out from under us
+            // (Library window, external rm, …). Fall back to the fan
+            // instead of showing a stale/empty editor at full width.
+            fannedDeck
+                .onAppear { controller.setState(.fanned) }
         }
     }
 
@@ -79,9 +98,16 @@ struct DeckView: View {
     private var fannedTabsColumn: some View {
         VStack(alignment: .trailing, spacing: 6) {
             ForEach(controller.store.activeNotes()) { note in
+                // `revealed` only gates the entrance animation played when the
+                // fan opens from a hover-in. Outside that animation window
+                // (isRevealing == false) every tab is fully visible, so a
+                // note created via +, Library import, or an external file
+                // drop is never stuck invisible waiting for the next
+                // collapse/re-hover cycle.
+                let isHidden = isRevealing && !revealed.contains(note.id)
                 NoteTab(note: note)
-                    .opacity(revealed.contains(note.id) ? 1 : 0)
-                    .offset(x: revealed.contains(note.id) ? 0 : 24)
+                    .opacity(isHidden ? 0 : 1)
+                    .offset(x: isHidden ? 24 : 0)
                     .onTapGesture { controller.setState(.open(noteID: note.id)) }
             }
             addButton
@@ -109,10 +135,15 @@ struct DeckView: View {
 
     private func revealStaggered() {
         revealed = []
-        for (index, note) in controller.store.activeNotes().enumerated() {
+        let notes = controller.store.activeNotes()
+        isRevealing = !notes.isEmpty
+        for (index, note) in notes.enumerated() {
             DispatchQueue.main.asyncAfter(deadline: .now() + Double(index) * 0.045) {
                 withAnimation(.spring(duration: 0.28)) {
                     _ = revealed.insert(note.id)
+                }
+                if index == notes.count - 1 {
+                    isRevealing = false
                 }
             }
         }
