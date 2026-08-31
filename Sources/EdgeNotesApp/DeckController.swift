@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import Combine
 import EdgeNotesCore
 
 enum DeckState: Equatable {
@@ -12,6 +13,33 @@ enum DeckState: Equatable {
 final class DeckController: ObservableObject {
     let store: NoteStore
     @Published var state: DeckState = .collapsed
+
+    /// The Day integration's store, when credentials are configured — `nil`
+    /// otherwise. Set by `AppDelegate.configureDayDeck()`, the same place
+    /// that creates/tears down the Day deck, so this note-side deck and the
+    /// Day-side deck always agree on whether the integration exists. The
+    /// editor reads this to decide whether "Send to Day" is offered at all.
+    @Published private(set) var dayStore: DayStore?
+    private var dayStoreSubscription: AnyCancellable?
+
+    /// Notes currently mid-`sendNoteToDay`. Published so the editor can
+    /// disable/relabel the button while a send is in flight — without this,
+    /// a fast double-click before the first request completes would create
+    /// two Day tasks and only the second id would stick (the first
+    /// `setDayTaskID` write gets overwritten by the second).
+    @Published private(set) var sendingToDayNoteIDs: Set<UUID> = []
+
+    /// The most recent `sendNoteToDay` failure, if any, tagged to the note
+    /// it happened to. Covers two cases: the create call itself failing
+    /// (note stays unlinked), and the create succeeding but the follow-up
+    /// description patch failing (note *is* linked — the task exists on
+    /// Day — but its description is empty). Without surfacing this, the
+    /// second case is invisible: nothing in this app reads `DayStore`'s
+    /// task-scoped `lastError` unless the task's detail card is open, which
+    /// this bridge deliberately doesn't reach (see NoteEditorView's
+    /// `dayAction`). Cleared the next time a send for that note is
+    /// attempted or succeeds cleanly.
+    @Published private(set) var dayActionError: (noteID: UUID, message: String)?
 
     private let panel: EdgePanel
 
@@ -47,7 +75,7 @@ final class DeckController: ObservableObject {
 
     init(store: NoteStore) {
         self.store = store
-        panel = EdgePanel(contentRect: .zero)
+        panel = EdgePanel(contentRect: .zero, edge: .trailing)
         let view = DeckView(controller: self)
         panel.contentView = NSHostingView(rootView: view)
         reposition()
@@ -193,10 +221,76 @@ final class DeckController: ObservableObject {
 
     func reposition() {
         guard let screen = NSScreen.screens.first else { return }
-        let visible = screen.visibleFrame
-        panel.setFrame(
-            NSRect(x: visible.maxX - width, y: visible.minY, width: width, height: visible.height),
-            display: true
-        )
+        panel.reposition(width: width, on: screen)
+    }
+
+    // MARK: - Day integration
+
+    /// Called by `AppDelegate.configureDayDeck()` whenever Day credentials
+    /// are set, changed, or removed. Forwards the store's own
+    /// `objectWillChange` into this controller's so the editor's "Send to
+    /// Day" indicator (which reads `dayStore.board` directly, not through
+    /// its own subscription) redraws when the board changes — e.g. a
+    /// background refresh updating the linked task's status.
+    func configureDayStore(_ newStore: DayStore?) {
+        dayStore = newStore
+        dayStoreSubscription = newStore?.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
+    }
+
+    /// Sends a note to Day: creates a task titled after the note with the
+    /// note's body as its description, then records the returned task id on
+    /// the note so the editor can switch to showing its status. No-op if
+    /// Day isn't configured, a send for this note is already in flight, or
+    /// the note has vanished (e.g. deleted while the request was in
+    /// flight).
+    ///
+    /// Flushes the pending autosave *before* reading the note: the editor
+    /// keeps live keystrokes in its own `@State` and only pushes them
+    /// through `scheduleBodySave` on a 250ms debounce, so reading
+    /// `store.notes` without flushing first can ship a body missing the
+    /// last few keystrokes typed just before the click. `closeOpenNote`
+    /// already has to get this right for the same reason.
+    func sendNoteToDay(noteID: UUID) {
+        guard let dayStore else { return }
+        guard !sendingToDayNoteIDs.contains(noteID) else { return }
+        flushPendingSave()
+        guard let note = store.notes.first(where: { $0.id == noteID }) else { return }
+        dayActionError = nil
+        sendingToDayNoteIDs.insert(noteID)
+        Task {
+            defer { sendingToDayNoteIDs.remove(noteID) }
+            guard let created = await dayStore.createTask(title: note.meta.title, description: note.body) else {
+                dayActionError = (noteID, dayStore.lastError?.message ?? "Could not send to Day.")
+                return
+            }
+            do {
+                try store.setDayTaskID(id: noteID, dayTaskID: created.id, now: Date())
+            } catch {
+                // M7: the task exists on Day (it was just created) but the
+                // local link write failed — swallowing this with `try?`
+                // left the note unlinked pointing at a real, now-orphaned
+                // Day task, and the very next "Send to Day" click would
+                // create a duplicate since nothing here would know one
+                // already exists. Surface it so the user knows not to
+                // retry blindly.
+                dayActionError = (noteID, "Sent to Day as \(created.id), but couldn't save the link locally " +
+                    "(\(error.localizedDescription)). Retrying will create a duplicate task.")
+                return
+            }
+            // The task was created (and is now linked) even if the
+            // follow-up description patch failed — `DayStore.createTask`
+            // tags that failure to the new task's id rather than rolling
+            // the creation back. Surface it here since it would otherwise
+            // never reach the user for a note sent this way.
+            if let lastError = dayStore.lastError, lastError.taskID == created.id {
+                dayActionError = (noteID, "Sent, but the description didn't save: \(lastError.message)")
+            }
+        }
+    }
+
+    func isSendingToDay(noteID: UUID) -> Bool {
+        sendingToDayNoteIDs.contains(noteID)
     }
 }

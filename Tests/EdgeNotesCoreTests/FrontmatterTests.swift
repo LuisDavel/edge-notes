@@ -72,4 +72,26 @@ final class FrontmatterTests: XCTestCase {
         XCTAssertEqual(Frontmatter.deriveTitle(fromBody: "- item"), "item")
         XCTAssertEqual(Frontmatter.deriveTitle(fromBody: "   \n\n"), "Untitled note")
     }
+
+    func testDayTaskIDRoundTrips() {
+        let iso = ISO8601DateFormatter()
+        var meta = NoteMeta(title: "Office", color: .blue, status: .active,
+                            createdAt: iso.date(from: "2026-08-29T10:00:00Z")!,
+                            updatedAt: iso.date(from: "2026-08-30T11:00:00Z")!)
+        meta.dayTaskID = "ACM-12"
+        let document = Frontmatter.serialize(meta: meta, body: "corpo")
+        XCTAssertTrue(document.contains("dayTaskId: ACM-12"))
+        let (parsed, body) = Frontmatter.parse(document: document, fallbackDate: Date())
+        XCTAssertEqual(parsed.dayTaskID, "ACM-12")
+        XCTAssertEqual(body, "corpo")
+    }
+
+    func testAbsentDayTaskIDStaysNilAndIsNotSerialized() {
+        let meta = NoteMeta(title: "Sem tarefa", color: .blue, status: .active,
+                            createdAt: Date(timeIntervalSince1970: 0),
+                            updatedAt: Date(timeIntervalSince1970: 0))
+        let document = Frontmatter.serialize(meta: meta, body: "x")
+        XCTAssertFalse(document.contains("dayTaskId"))
+        XCTAssertNil(Frontmatter.parse(document: document, fallbackDate: Date()).meta.dayTaskID)
+    }
 }

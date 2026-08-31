@@ -25,22 +25,30 @@ public enum Frontmatter {
             color: fields["color"].flatMap(NoteColor.init(rawValue:)) ?? .blue,
             status: fields["status"].flatMap(NoteStatus.init(rawValue:)) ?? .active,
             createdAt: fields["createdAt"].flatMap(iso.date(from:)) ?? fallbackDate,
-            updatedAt: fields["updatedAt"].flatMap(iso.date(from:)) ?? fallbackDate
+            updatedAt: fields["updatedAt"].flatMap(iso.date(from:)) ?? fallbackDate,
+            dayTaskID: fields["dayTaskId"].flatMap { $0.isEmpty ? nil : $0 }
         )
         return (meta, body)
     }
 
     public static func serialize(meta: NoteMeta, body: String) -> String {
-        """
-        ---
-        title: \(meta.title)
-        color: \(meta.color.rawValue)
-        status: \(meta.status.rawValue)
-        createdAt: \(iso.string(from: meta.createdAt))
-        updatedAt: \(iso.string(from: meta.updatedAt))
-        ---
-        \(body)
-        """
+        var lines = [
+            "---",
+            "title: \(meta.title)",
+            "color: \(meta.color.rawValue)",
+            "status: \(meta.status.rawValue)",
+            "createdAt: \(iso.string(from: meta.createdAt))",
+            "updatedAt: \(iso.string(from: meta.updatedAt))",
+        ]
+        // Emitted only when present so a note that never touched Day keeps
+        // byte-identical frontmatter to what it produced before this field
+        // existed — required for the existing round-trip tests to keep
+        // passing unchanged.
+        if let dayTaskID = meta.dayTaskID {
+            lines.append("dayTaskId: \(dayTaskID)")
+        }
+        lines.append("---")
+        return lines.joined(separator: "\n") + "\n\(body)"
     }
 
     public static func deriveTitle(fromBody body: String) -> String {

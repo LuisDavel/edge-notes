@@ -14,13 +14,22 @@ public struct NoteMeta: Equatable, Sendable {
     public var status: NoteStatus
     public var createdAt: Date
     public var updatedAt: Date
+    /// The Day task this note was sent to, if any. `nil` for the vast
+    /// majority of notes, which never touch the Day integration — see
+    /// `Frontmatter.serialize`, which omits the `dayTaskId` line entirely
+    /// when this is `nil` so existing notes' frontmatter is unaffected.
+    public var dayTaskID: String?
 
-    public init(title: String, color: NoteColor, status: NoteStatus, createdAt: Date, updatedAt: Date) {
+    public init(
+        title: String, color: NoteColor, status: NoteStatus, createdAt: Date, updatedAt: Date,
+        dayTaskID: String? = nil
+    ) {
         self.title = title
         self.color = color
         self.status = status
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.dayTaskID = dayTaskID
     }
 }
 
