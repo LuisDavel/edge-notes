@@ -7,6 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var watcher: FolderWatcher?
     private var store: NoteStore!
     private var libraryController: LibraryWindowController!
+    private var daySettingsController: DaySettingsWindowController!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Installed first, and unconditionally: even the failure path below
@@ -32,6 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         libraryController = LibraryWindowController(store: store)
+        daySettingsController = DaySettingsWindowController()
         let deckOnChange = store.onChange
         store.onChange = {
             deckOnChange?()
@@ -42,6 +44,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.button?.image = NSImage(
             systemSymbolName: "note.text", accessibilityDescription: "EdgeNotes")
         let menu = NSMenu()
+        let daySettings = NSMenuItem(title: "Day Settings…", action: #selector(openDaySettings), keyEquivalent: "")
+        daySettings.target = self
+        menu.addItem(daySettings)
         let library = NSMenuItem(title: "Open Library", action: #selector(openLibrary), keyEquivalent: "l")
         library.target = self
         menu.addItem(library)
@@ -61,5 +66,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc @MainActor private func openLibrary() {
         libraryController.show()
+    }
+
+    @objc @MainActor private func openDaySettings() {
+        daySettingsController.show()
     }
 }
