@@ -316,4 +316,27 @@ final class DayStoreTests: XCTestCase {
         XCTAssertNil(created)
         XCTAssertNotNil(store.lastError)
     }
+
+    /// The task itself was created successfully server-side — only the
+    /// follow-up description patch failed. `createTask` must not pretend
+    /// the task doesn't exist (it does, on the server, and the note-to-Day
+    /// bridge is about to link a note to it): the task is still folded into
+    /// the board, still handed back to the caller, just without the
+    /// description, and the failure is reported tagged to *that* task's id
+    /// rather than as a board-level (`taskID: nil`) error.
+    func testCreateTaskWithDescriptionFoldsInTaskAndTagsErrorWhenPatchFails() async {
+        let api = FakeDayAPI()
+        api.boardResult = .success(makeBoard([]))
+        api.createResult = .success(makeTask("A-9", .todo))
+        api.updateError = DayError.server(status: 500, message: "boom")
+        let store = DayStore(api: api, cache: makeCache())
+        await store.refresh()
+        let created = await store.createTask(title: "Office", description: "corpo da nota")
+        XCTAssertEqual(created?.id, "A-9", "the task was created and must still be handed back")
+        XCTAssertEqual(created?.description, "", "the patch failed, so the description never landed")
+        XCTAssertEqual(store.board?.columns.first(where: { $0.key == .todo })?.tasks.map(\.id), ["A-9"],
+                       "a failed description patch must not un-create the task")
+        XCTAssertEqual(store.lastError?.taskID, "A-9")
+        XCTAssertNotNil(store.lastError?.message)
+    }
 }

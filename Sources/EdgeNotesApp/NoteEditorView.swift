@@ -121,6 +121,9 @@ struct NoteEditorView: View {
     ///
     /// - No `dayTaskID` yet: a "Send to Day" button that creates a task
     ///   titled after the note with the note's body as its description.
+    ///   Disabled (and relabeled) while a send for this note is in flight,
+    ///   and relabeled again if the last attempt failed so retrying is
+    ///   obvious.
     /// - Already linked: a status indicator (task id + current status, read
     ///   live from `DayStore.board`) rather than a button. The brief asks
     ///   for this to open the task in the left Day deck on click, but the
@@ -129,22 +132,43 @@ struct NoteEditorView: View {
     ///   mean threading a reference between controllers that are otherwise
     ///   deliberately independent. Left as a status-only label; opening the
     ///   deck is the pending piece, called out in the task report.
+    /// - A `dayActionError` for this note (create failed outright, or it
+    ///   succeeded but the description patch didn't) is always shown next
+    ///   to whichever of the two above is on screen — otherwise a partial
+    ///   failure is invisible: nothing else in this app surfaces a
+    ///   task-scoped `DayMutationError` unless that task's detail card is
+    ///   open, which this bridge doesn't reach.
     @ViewBuilder
     private func dayAction(for note: Note) -> some View {
         if let dayStore = controller.dayStore {
-            if let dayTaskID = note.meta.dayTaskID {
-                let status = dayStore.board?.columns
-                    .flatMap(\.tasks)
-                    .first(where: { $0.id == dayTaskID })?
-                    .status
-                Text("Day: \(status?.displayName ?? dayTaskID)")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.black.opacity(0.55))
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3.5)
-            } else {
-                FooterButton(title: "Send to Day") {
-                    controller.sendNoteToDay(noteID: noteID)
+            let isSending = controller.isSendingToDay(noteID: noteID)
+            let error = controller.dayActionError?.noteID == noteID ? controller.dayActionError?.message : nil
+            HStack(spacing: 4) {
+                if let dayTaskID = note.meta.dayTaskID {
+                    let status = dayStore.board?.columns
+                        .flatMap(\.tasks)
+                        .first(where: { $0.id == dayTaskID })?
+                        .status
+                    Text("Day: \(status?.displayName ?? dayTaskID)")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.black.opacity(0.55))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3.5)
+                } else {
+                    FooterButton(
+                        title: isSending ? "Sending…" : (error != nil ? "Retry Day" : "Send to Day"),
+                        tint: error != nil ? .red.opacity(0.85) : .black.opacity(0.72),
+                        isDisabled: isSending
+                    ) {
+                        controller.sendNoteToDay(noteID: noteID)
+                    }
+                }
+                if let error {
+                    Text(error)
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.red)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
                 }
             }
         }
@@ -241,6 +265,7 @@ struct ColorSwatch: View {
 struct FooterButton: View {
     let title: String
     var tint: Color = .black.opacity(0.72)
+    var isDisabled: Bool = false
     let action: () -> Void
 
     @State private var isHovering = false
@@ -268,5 +293,10 @@ struct FooterButton: View {
         .buttonStyle(SpringButtonStyle())
         .hoverSpring($isHovering)
         .fixedSize()
+        // Belt-and-suspenders alongside `DeckController.sendNoteToDay`'s own
+        // in-flight guard: this keeps a fast double-click from even
+        // registering a second tap while the first request is outstanding.
+        .disabled(isDisabled)
+        .opacity(isDisabled ? 0.55 : 1)
     }
 }
