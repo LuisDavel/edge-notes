@@ -95,7 +95,7 @@ private struct DaySettingsView: View {
                 Button("Test Connection") {
                     testConnection()
                 }
-                .disabled(isTesting || baseURLText.isEmpty || token.isEmpty)
+                .disabled(isTesting || isBlank(baseURLText) || isBlank(token))
 
                 Spacer()
 
@@ -103,19 +103,47 @@ private struct DaySettingsView: View {
                     save()
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(baseURLText.isEmpty || token.isEmpty)
+                .disabled(isBlank(baseURLText) || isBlank(token))
             }
         }
         .padding(16)
         .frame(width: 460, height: 220)
     }
 
+    private var trimmedToken: String {
+        token.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func isBlank(_ text: String) -> Bool {
+        text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Parses `baseURLText` (trimmed) into a URL, requiring an http/https
+    /// scheme and a host so a bare hostname like "day.example.com" — which
+    /// `URL(string:)` accepts but which fails only much later, as an opaque
+    /// network error — is rejected here with a message that names the
+    /// actual problem.
+    private func parseBaseURL() -> (url: URL?, errorMessage: String?) {
+        let trimmed = baseURLText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: trimmed) else {
+            return (nil, "Invalid URL")
+        }
+        guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
+            return (nil, "URL must start with http:// or https://")
+        }
+        guard let host = url.host, !host.isEmpty else {
+            return (nil, "URL is missing a host")
+        }
+        return (url, nil)
+    }
+
     private func testConnection() {
-        guard let url = URL(string: baseURLText) else {
-            testResult = .failure("Invalid URL")
+        let parsed = parseBaseURL()
+        guard let url = parsed.url else {
+            testResult = .failure(parsed.errorMessage ?? "Invalid URL")
             return
         }
-        let credentials = DayCredentials(baseURL: url, token: token)
+        let credentials = DayCredentials(baseURL: url, token: trimmedToken)
         isTesting = true
         testResult = nil
         Task {
@@ -124,34 +152,25 @@ private struct DaySettingsView: View {
                 let board = try await client.board(sprintID: nil)
                 testResult = .success(columns: board.columns.count)
             } catch {
-                testResult = .failure(Self.message(for: error))
+                testResult = .failure((error as? DayError)?.userFacingMessage ?? "Connection failed")
             }
             isTesting = false
         }
     }
 
     private func save() {
-        guard let url = URL(string: baseURLText) else {
-            testResult = .failure("Invalid URL")
+        let parsed = parseBaseURL()
+        guard let url = parsed.url else {
+            testResult = .failure(parsed.errorMessage ?? "Invalid URL")
+            return
+        }
+        let tokenToSave = trimmedToken
+        guard DayKeychain.writeToken(tokenToSave) else {
+            testResult = .failure("Could not save the token to the Keychain — try again")
             return
         }
         DaySettings.baseURL = url
-        DayKeychain.writeToken(token)
+        testResult = nil
         NotificationCenter.default.post(name: .dayCredentialsChanged, object: nil)
-    }
-
-    private static func message(for error: Error) -> String {
-        guard let dayError = error as? DayError else {
-            return "Connection failed"
-        }
-        switch dayError {
-        case .unauthorized: return "Unauthorized — check the token"
-        case .forbidden: return "Forbidden — token lacks access"
-        case .notFound: return "Not found — check the URL"
-        case .server(let status, let message):
-            return message.isEmpty ? "Server error (\(status))" : "Server error (\(status)): \(message)"
-        case .offline: return "Offline — could not reach the server"
-        case .decoding: return "Unexpected response from server"
-        }
     }
 }

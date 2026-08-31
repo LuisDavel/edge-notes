@@ -19,6 +19,22 @@ public enum DayError: Error, Equatable {
     case decoding(String)
 }
 
+extension DayError {
+    /// A short, user-facing description of the error, safe to show in UI —
+    /// it never includes anything from the credentials that produced it.
+    public var userFacingMessage: String {
+        switch self {
+        case .unauthorized: return "Unauthorized — check the token"
+        case .forbidden: return "Forbidden — token lacks access"
+        case .notFound: return "Not found — check the URL"
+        case .server(let status, let message):
+            return message.isEmpty ? "Server error (\(status))" : "Server error (\(status)): \(message)"
+        case .offline: return "Offline — could not reach the server"
+        case .decoding: return "Unexpected response from server"
+        }
+    }
+}
+
 public protocol DayAPI: Sendable {
     func board(sprintID: String?) async throws -> DayBoard
     func task(id: String) async throws -> DayTask

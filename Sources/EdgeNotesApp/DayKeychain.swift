@@ -32,24 +32,54 @@ enum DayKeychain {
         return String(data: data, encoding: .utf8)
     }
 
-    /// Writes (adding or updating as needed) the token to the Keychain.
-    static func writeToken(_ token: String) {
-        guard let data = token.data(using: .utf8) else { return }
-
-        if readToken() != nil {
-            let update: [String: Any] = [kSecValueData as String: data]
-            SecItemUpdate(baseQuery() as CFDictionary, update as CFDictionary)
-        } else {
-            var attributes = baseQuery()
-            attributes[kSecValueData as String] = data
-            attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-            SecItemAdd(attributes as CFDictionary, nil)
-        }
+    /// True when an item already exists for our service/account, checked
+    /// without asking the Keychain to decrypt/return the secret data —
+    /// existence doesn't depend on the stored bytes being decodable, unlike
+    /// `readToken()`.
+    private static func exists() -> Bool {
+        var query = baseQuery()
+        query[kSecReturnData as String] = false
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        let status = SecItemCopyMatching(query as CFDictionary, nil)
+        return status == errSecSuccess
     }
 
-    /// Removes any stored token. Safe to call when none exists.
-    static func deleteToken() {
-        SecItemDelete(baseQuery() as CFDictionary)
+    /// Writes (adding or updating as needed) the token to the Keychain.
+    /// Returns whether the write actually succeeded — callers must not
+    /// assume success just because this returned. Handles the races where
+    /// the existence check and the write disagree (`errSecItemNotFound` on
+    /// update, `errSecDuplicateItem` on add) by retrying the other branch
+    /// once.
+    @discardableResult
+    static func writeToken(_ token: String) -> Bool {
+        guard let data = token.data(using: .utf8) else { return false }
+        let valueUpdate: [String: Any] = [kSecValueData as String: data]
+
+        if exists() {
+            let status = SecItemUpdate(baseQuery() as CFDictionary, valueUpdate as CFDictionary)
+            if status == errSecSuccess { return true }
+            guard status == errSecItemNotFound else { return false }
+            // Lost a race: the item disappeared between the existence check
+            // and the update. Fall through to add.
+        }
+
+        var attributes = baseQuery()
+        attributes[kSecValueData as String] = data
+        attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        let addStatus = SecItemAdd(attributes as CFDictionary, nil)
+        if addStatus == errSecSuccess { return true }
+        guard addStatus == errSecDuplicateItem else { return false }
+        // Lost the opposite race: the item appeared between the existence
+        // check and the add. Fall back to update.
+        return SecItemUpdate(baseQuery() as CFDictionary, valueUpdate as CFDictionary) == errSecSuccess
+    }
+
+    /// Removes any stored token. Safe to call when none exists — that
+    /// counts as success, since the postcondition (no token stored) holds.
+    @discardableResult
+    static func deleteToken() -> Bool {
+        let status = SecItemDelete(baseQuery() as CFDictionary)
+        return status == errSecSuccess || status == errSecItemNotFound
     }
 }
 
@@ -66,7 +96,18 @@ enum DaySettings {
             return URL(string: raw)
         }
         set {
-            UserDefaults.standard.set(newValue?.absoluteString, forKey: baseURLKey)
+            guard let newValue else {
+                UserDefaults.standard.removeObject(forKey: baseURLKey)
+                return
+            }
+            // Normalize away a trailing slash so "https://day.example/" and
+            // "https://day.example" are stored (and later joined by
+            // DayClient) identically.
+            var text = newValue.absoluteString
+            if text.hasSuffix("/") {
+                text.removeLast()
+            }
+            UserDefaults.standard.set(text, forKey: baseURLKey)
         }
     }
 
