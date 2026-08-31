@@ -138,8 +138,12 @@ struct DayTaskDetailView: View {
     private func card(_ task: DayTask, in column: DayColumn) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             header(task, column: column)
-            if let error = controller.store.lastErrorMessage {
-                errorStrip(error)
+            // Scoped to this task: `store.lastError` is one shared field
+            // written by every mutation on the board (refresh, a drag
+            // elsewhere, another task's comment, …), so only render it here
+            // when it is actually about *this* task.
+            if let error = controller.store.lastError, error.taskID == task.id {
+                errorStrip(error.message)
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {
@@ -169,15 +173,29 @@ struct DayTaskDetailView: View {
         .padding(14)
         .frame(width: 300, height: 420)
         .background(
-            RoundedRectangle(cornerRadius: 14)
-                .fill(.regularMaterial)
-                .shadow(color: .black.opacity(0.20), radius: 10, x: 2, y: 3)
+            ZStack {
+                RoundedRectangle(cornerRadius: 14).fill(.regularMaterial)
+                // A soft priority tint over the material — `DayPriority.tint`
+                // is already fully saturated (it drives the small
+                // priority-dot badges elsewhere), so it's dropped to low
+                // opacity here to read as a wash rather than a colored card,
+                // keeping text legible and the card in the same family as
+                // the note card's muted, colored backgrounds. `.none`
+                // renders as `.clear`, i.e. no tint at all.
+                RoundedRectangle(cornerRadius: 14).fill(task.priority.tint.opacity(0.28))
+            }
+            .shadow(color: .black.opacity(0.20), radius: 10, x: 2, y: 3)
         )
         .contentShape(RoundedRectangle(cornerRadius: 14))
         .onExitCommand { controller.closeOpen(to: .column(column.key)) }
+        // Opening (or reopening) a card starts clean: without this, an
+        // error left over from a previous mutation on this same task would
+        // render the instant the card appears, before the user has done
+        // anything in this session with it.
+        .onAppear { controller.store.clearError() }
     }
 
-    // MARK: - Header (Task 5, unchanged)
+    // MARK: - Header (Task 5's title, extended with the task id)
 
     private func header(_ task: DayTask, column: DayColumn) -> some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -194,6 +212,13 @@ struct DayTaskDetailView: View {
                     RunningDot()
                 }
             }
+            // The id (e.g. "ACM-12") is how the user cross-references this
+            // task back in the Day app itself — the brief calls for it
+            // explicitly ("cabeçalho: id + título"), and `.id(taskID)` on
+            // the outer view is SwiftUI identity, not a visible label.
+            Text(task.id)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
             Text(task.title)
                 .font(.system(size: 14, weight: .bold))
                 .fixedSize(horizontal: false, vertical: true)
@@ -290,7 +315,7 @@ struct DayTaskDetailView: View {
         Task {
             await controller.store.comment(taskID: taskID, body: body)
             isSendingComment = false
-            if controller.store.lastErrorMessage == nil {
+            if controller.store.lastError == nil {
                 commentBody = ""
             }
         }

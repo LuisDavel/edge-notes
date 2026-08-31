@@ -121,7 +121,20 @@ final class DayStoreTests: XCTestCase {
         await store.setStatus(taskID: "A-1", to: .done)
         XCTAssertEqual(store.board?.columns.first(where: { $0.key == .todo })?.tasks.map(\.id), ["A-1"],
                        "board deve voltar ao estado anterior")
-        XCTAssertNotNil(store.lastErrorMessage)
+        XCTAssertEqual(store.lastError?.taskID, "A-1")
+        XCTAssertNotNil(store.lastError?.message)
+    }
+
+    func testMutationErrorForOneTaskDoesNotSurfaceForAnother() async {
+        let api = FakeDayAPI()
+        api.boardResult = .success(makeBoard([makeTask("A-1", .todo), makeTask("A-2", .todo)]))
+        api.updateError = DayError.forbidden
+        let store = DayStore(api: api, cache: makeCache())
+        await store.refresh()
+        await store.setStatus(taskID: "A-1", to: .done)
+        XCTAssertEqual(store.lastError?.taskID, "A-1")
+        XCTAssertNotEqual(store.lastError?.taskID, "A-2",
+                          "an error from A-1's mutation must not be attributable to A-2")
     }
 
     func testReorderAppliesLocalOrderAndCallsAPI() async {
@@ -168,7 +181,28 @@ final class DayStoreTests: XCTestCase {
         await store.toggleTimer(taskID: "A-1")
         XCTAssertNil(store.board?.columns.first(where: { $0.key == .todo })?.tasks.first?.running,
                      "board deve voltar ao estado anterior")
-        XCTAssertNotNil(store.lastErrorMessage)
+        XCTAssertEqual(store.lastError?.taskID, "A-1")
+    }
+
+    func testToggleTimerStopsARunningTimer() async throws {
+        let api = FakeDayAPI()
+        let running = DayTask(id: "A-1", title: "A-1", description: "", status: .todo, priority: .none,
+                               order: 0, assignee: nil, labels: [], loggedSeconds: 30,
+                               running: DayRunningTimer(startedAt: Date(timeIntervalSince1970: 500)),
+                               subtaskDone: 0, subtaskTotal: 0, childCount: 0)
+        api.boardResult = .success(makeBoard([running]))
+        let serverTask = DayTask(id: "A-1", title: "A-1", description: "", status: .todo, priority: .none,
+                                  order: 0, assignee: nil, labels: [], loggedSeconds: 90,
+                                  running: nil, subtaskDone: 0, subtaskTotal: 0, childCount: 0)
+        api.toggleTimerResult = .success(serverTask)
+        let store = DayStore(api: api, cache: makeCache())
+        await store.refresh()
+        XCTAssertNotNil(store.board?.columns.first(where: { $0.key == .todo })?.tasks.first?.running,
+                        "precondition: the task starts with a running timer")
+        await store.toggleTimer(taskID: "A-1")
+        let updated = try XCTUnwrap(store.board?.columns.first(where: { $0.key == .todo })?.tasks.first)
+        XCTAssertNil(updated.running, "toggling a running timer off must leave it stopped")
+        XCTAssertEqual(updated.loggedSeconds, 90)
     }
 
     func testCommentDelegatesToAPI() async {

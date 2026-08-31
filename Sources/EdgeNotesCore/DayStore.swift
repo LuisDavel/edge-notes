@@ -7,11 +7,28 @@ public enum DayState: Equatable {
     case failed(DayError)
 }
 
+/// A mutation failure, tagged with the task it happened to (`nil` for a
+/// board-wide operation like `refresh`). `lastErrorMessage`'s single
+/// untagged `String?` used to surface on *every* open card regardless of
+/// which task actually failed — a failed drag-reorder elsewhere on the
+/// board, or a stale error from a previously open card, would render inside
+/// whatever task detail card happened to be on screen. Tagging the error
+/// lets a card filter to only the error it caused.
+public struct DayMutationError: Equatable, Sendable {
+    public let taskID: String?
+    public let message: String
+
+    public init(taskID: String?, message: String) {
+        self.taskID = taskID
+        self.message = message
+    }
+}
+
 @MainActor
 public final class DayStore: ObservableObject {
     @Published public private(set) var board: DayBoard?
     @Published public private(set) var state: DayState = .idle
-    @Published public private(set) var lastErrorMessage: String?
+    @Published public private(set) var lastError: DayMutationError?
 
     private let api: DayAPI
     private let cache: DayCache
@@ -29,17 +46,17 @@ public final class DayStore: ObservableObject {
             self.board = board
             cache.save(board)
             state = .loaded(stale: false)
-            lastErrorMessage = nil
+            lastError = nil
         } catch let error as DayError {
             if error == .offline, board != nil {
                 state = .loaded(stale: true)
             } else {
                 state = .failed(error)
             }
-            lastErrorMessage = message(for: error)
+            lastError = DayMutationError(taskID: nil, message: message(for: error))
         } catch {
             state = .failed(.decoding(String(describing: error)))
-            lastErrorMessage = String(describing: error)
+            lastError = DayMutationError(taskID: nil, message: String(describing: error))
         }
     }
 
@@ -53,10 +70,10 @@ public final class DayStore: ObservableObject {
         }
         do {
             try await api.updateTask(id: taskID, patch: DayTaskPatch(status: status))
-            lastErrorMessage = nil
+            lastError = nil
         } catch {
             board = previous
-            lastErrorMessage = message(for: error)
+            lastError = DayMutationError(taskID: taskID, message: message(for: error))
         }
     }
 
@@ -70,10 +87,10 @@ public final class DayStore: ObservableObject {
         }
         do {
             try await api.updateTask(id: taskID, patch: DayTaskPatch(priority: priority))
-            lastErrorMessage = nil
+            lastError = nil
         } catch {
             board = previous
-            lastErrorMessage = message(for: error)
+            lastError = DayMutationError(taskID: taskID, message: message(for: error))
         }
     }
 
@@ -95,10 +112,10 @@ public final class DayStore: ObservableObject {
         }
         do {
             try await api.reorder(taskID: taskID, toStatus: toStatus, orderedIDs: orderedIDs)
-            lastErrorMessage = nil
+            lastError = nil
         } catch {
             board = previous
-            lastErrorMessage = message(for: error)
+            lastError = DayMutationError(taskID: taskID, message: message(for: error))
         }
     }
 
@@ -106,9 +123,9 @@ public final class DayStore: ObservableObject {
         do {
             let task = try await api.createTask(title: title, priority: nil, backlog: false)
             applyLocalChange { tasks in tasks + [task] }
-            lastErrorMessage = nil
+            lastError = nil
         } catch {
-            lastErrorMessage = message(for: error)
+            lastError = DayMutationError(taskID: nil, message: message(for: error))
         }
     }
 
@@ -130,20 +147,28 @@ public final class DayStore: ObservableObject {
             applyLocalChange { tasks in
                 tasks.map { $0.id == updated.id ? updated : $0 }
             }
-            lastErrorMessage = nil
+            lastError = nil
         } catch {
             board = previous
-            lastErrorMessage = message(for: error)
+            lastError = DayMutationError(taskID: taskID, message: message(for: error))
         }
     }
 
     public func comment(taskID: String, body: String) async {
         do {
             try await api.comment(taskID: taskID, body: body)
-            lastErrorMessage = nil
+            lastError = nil
         } catch {
-            lastErrorMessage = message(for: error)
+            lastError = DayMutationError(taskID: taskID, message: message(for: error))
         }
+    }
+
+    /// Drops any pending mutation error. Called by the task detail card when
+    /// it appears, so a stale error from a previous mutation on this task
+    /// (or any other) doesn't render the instant the card opens, before the
+    /// user has done anything in it.
+    public func clearError() {
+        lastError = nil
     }
 
     // MARK: - Helpers
