@@ -24,7 +24,7 @@ public enum DayPriority: String, Codable, CaseIterable, Sendable {
     case urgent
 }
 
-public struct DayUser: Decodable, Equatable, Sendable {
+public struct DayUser: Codable, Equatable, Sendable {
     public let id: String
     public let name: String
 
@@ -34,7 +34,7 @@ public struct DayUser: Decodable, Equatable, Sendable {
     }
 }
 
-public struct DayLabel: Decodable, Equatable, Sendable {
+public struct DayLabel: Codable, Equatable, Sendable {
     public let id: String
     public let text: String
 
@@ -44,7 +44,7 @@ public struct DayLabel: Decodable, Equatable, Sendable {
     }
 }
 
-public struct DayRunningTimer: Decodable, Equatable, Sendable {
+public struct DayRunningTimer: Codable, Equatable, Sendable {
     public let startedAt: Date
 
     public init(startedAt: Date) {
@@ -52,7 +52,7 @@ public struct DayRunningTimer: Decodable, Equatable, Sendable {
     }
 }
 
-public struct DayTask: Decodable, Equatable, Identifiable, Sendable {
+public struct DayTask: Codable, Equatable, Identifiable, Sendable {
     public let id: String
     public let title: String
     public let description: String
@@ -98,7 +98,7 @@ public struct DayTask: Decodable, Equatable, Identifiable, Sendable {
     }
 }
 
-public struct DayColumn: Decodable, Equatable, Sendable {
+public struct DayColumn: Codable, Equatable, Sendable {
     public let key: DayStatus
     public let name: String
     public let color: String
@@ -114,7 +114,7 @@ public struct DayColumn: Decodable, Equatable, Sendable {
     }
 }
 
-public struct DayBoard: Decodable, Equatable, Sendable {
+public struct DayBoard: Codable, Equatable, Sendable {
     public let columns: [DayColumn]
 
     public init(columns: [DayColumn]) {
