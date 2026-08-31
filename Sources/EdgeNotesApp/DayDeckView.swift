@@ -10,8 +10,15 @@ extension Color {
         var digits = hex.trimmingCharacters(in: .whitespacesAndNewlines)
         if digits.hasPrefix("#") { digits.removeFirst() }
         var value: UInt64 = 0
+        let scanner = Scanner(string: digits)
         guard (digits.count == 3 || digits.count == 6),
-              Scanner(string: digits).scanHexInt64(&value) else {
+              scanner.scanHexInt64(&value),
+              scanner.isAtEnd else {
+            // `scanHexInt64` succeeds on a valid *prefix* of the string
+            // (e.g. "abcde$" scans "abcde" and reports success), so without
+            // the `isAtEnd` check a malformed hex string with trailing junk
+            // would silently produce a wrong color instead of falling back
+            // to gray.
             self = .gray
             return
         }
@@ -26,7 +33,8 @@ extension Color {
     }
 }
 
-private extension DayPriority {
+/// Not `private`: `DayTaskDetailView` (a separate file) needs `label` too.
+extension DayPriority {
     var label: String {
         switch self {
         case .none: return ""
@@ -254,7 +262,8 @@ struct DayDeckView: View {
                     .onTapGesture { controller.closeOpen(to: .column(found.column.key)) }
                 HStack(alignment: .top, spacing: 0) {
                     fannedTabsColumn
-                    taskCard(found.task, in: found.column)
+                    DayTaskDetailView(controller: controller, taskID: id)
+                        .id(id)
                         .padding(.leading, 8)
                         .padding(.top, 60)
                     Spacer(minLength: 0)
@@ -276,70 +285,8 @@ struct DayDeckView: View {
         return nil
     }
 
-    private func taskCard(_ task: DayTask, in column: DayColumn) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Button {
-                    controller.closeOpen(to: .column(column.key))
-                } label: {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 11, weight: .semibold))
-                }
-                .buttonStyle(.plain)
-                Spacer()
-                if task.running != nil {
-                    RunningDot()
-                }
-            }
-            Text(task.title)
-                .font(.system(size: 14, weight: .bold))
-                .fixedSize(horizontal: false, vertical: true)
-
-            Menu {
-                ForEach(DayStatus.allCases, id: \.self) { status in
-                    Button(status.displayName) {
-                        Task { await controller.store.setStatus(taskID: task.id, to: status) }
-                    }
-                }
-            } label: {
-                Label(task.status.displayName, systemImage: "circle.grid.2x2")
-                    .font(.system(size: 11))
-            }
-
-            Menu {
-                ForEach(DayPriority.allCases, id: \.self) { priority in
-                    Button(priority.label.isEmpty ? "None" : priority.label) {
-                        Task { await controller.store.setPriority(taskID: task.id, to: priority) }
-                    }
-                }
-            } label: {
-                Label(task.priority == .none ? "Priority" : task.priority.label,
-                      systemImage: "flag")
-                    .font(.system(size: 11))
-            }
-
-            if let assignee = task.assignee {
-                Text("Assignee: \(assignee.name)")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            }
-            if task.subtaskTotal > 0 {
-                Text("Subtasks: \(task.subtaskDone)/\(task.subtaskTotal)")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-        }
-        .padding(14)
-        .frame(width: 300, height: 420)
-        .background(
-            RoundedRectangle(cornerRadius: 14)
-                .fill(.regularMaterial)
-                .shadow(color: .black.opacity(0.20), radius: 10, x: 2, y: 3)
-        )
-        .contentShape(RoundedRectangle(cornerRadius: 14))
-        .onExitCommand { controller.closeOpen(to: .column(column.key)) }
-    }
+    // The task detail card itself lives in `DayTaskDetailView.swift` — see
+    // `DayTaskDetailView`.
 
     // MARK: - Fan scheduling (mirrors DeckView)
 

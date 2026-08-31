@@ -112,6 +112,31 @@ public final class DayStore: ObservableObject {
         }
     }
 
+    /// Starts or stops the task's timer. Optimistically flips the local
+    /// `running` flag (mirroring `setStatus`/`setPriority`) so the play/stop
+    /// indicator responds immediately, then reconciles with the full task
+    /// the server hands back — which also carries the authoritative
+    /// `loggedSeconds` — on success, or reverts the whole board on failure.
+    public func toggleTimer(taskID: String) async {
+        let previous = board
+        applyLocalChange { tasks in
+            tasks.map { task in
+                guard task.id == taskID else { return task }
+                return task.withRunning(task.running == nil ? DayRunningTimer(startedAt: Date()) : nil)
+            }
+        }
+        do {
+            let updated = try await api.toggleTimer(taskID: taskID)
+            applyLocalChange { tasks in
+                tasks.map { $0.id == updated.id ? updated : $0 }
+            }
+            lastErrorMessage = nil
+        } catch {
+            board = previous
+            lastErrorMessage = message(for: error)
+        }
+    }
+
     public func comment(taskID: String, body: String) async {
         do {
             try await api.comment(taskID: taskID, body: body)
@@ -171,6 +196,12 @@ private extension DayTask {
     }
 
     func withOrder(_ order: Int) -> DayTask {
+        DayTask(id: id, title: title, description: description, status: status, priority: priority,
+                order: order, assignee: assignee, labels: labels, loggedSeconds: loggedSeconds,
+                running: running, subtaskDone: subtaskDone, subtaskTotal: subtaskTotal, childCount: childCount)
+    }
+
+    func withRunning(_ running: DayRunningTimer?) -> DayTask {
         DayTask(id: id, title: title, description: description, status: status, priority: priority,
                 order: order, assignee: assignee, labels: labels, loggedSeconds: loggedSeconds,
                 running: running, subtaskDone: subtaskDone, subtaskTotal: subtaskTotal, childCount: childCount)

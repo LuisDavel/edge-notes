@@ -6,9 +6,11 @@ final class FakeDayAPI: DayAPI, @unchecked Sendable {
     var updateError: Error?
     var reorderError: Error?
     var createResult: Result<DayTask, Error>?
+    var toggleTimerResult: Result<DayTask, Error>?
     private(set) var updateCalls: [(String, DayTaskPatch)] = []
     private(set) var reorderCalls: [(String, DayStatus?, [String])] = []
     private(set) var commentCalls: [(String, String)] = []
+    private(set) var toggleTimerCalls: [String] = []
 
     func board(sprintID: String?) async throws -> DayBoard { try boardResult.get() }
     func task(id: String) async throws -> DayTask { throw DayError.notFound }
@@ -25,7 +27,11 @@ final class FakeDayAPI: DayAPI, @unchecked Sendable {
         if let reorderError { throw reorderError }
     }
     func comment(taskID: String, body: String) async throws { commentCalls.append((taskID, body)) }
-    func toggleTimer(taskID: String) async throws -> DayTask { throw DayError.notFound }
+    func toggleTimer(taskID: String) async throws -> DayTask {
+        toggleTimerCalls.append(taskID)
+        guard let toggleTimerResult else { throw DayError.notFound }
+        return try toggleTimerResult.get()
+    }
     func sprints() async throws -> [DaySprint] { [] }
 }
 
@@ -134,6 +140,35 @@ final class DayStoreTests: XCTestCase {
         let store = DayStore(api: api, cache: makeCache())
         await store.refresh()
         XCTAssertEqual(store.state, .failed(.unauthorized))
+    }
+
+    func testToggleTimerStartsOptimisticallyAndReconcilesWithServer() async throws {
+        let api = FakeDayAPI()
+        api.boardResult = .success(makeBoard([makeTask("A-1", .todo)]))
+        let serverTask = DayTask(id: "A-1", title: "A-1", description: "", status: .todo, priority: .none,
+                                  order: 0, assignee: nil, labels: [], loggedSeconds: 42,
+                                  running: DayRunningTimer(startedAt: Date(timeIntervalSince1970: 1_000)),
+                                  subtaskDone: 0, subtaskTotal: 0, childCount: 0)
+        api.toggleTimerResult = .success(serverTask)
+        let store = DayStore(api: api, cache: makeCache())
+        await store.refresh()
+        await store.toggleTimer(taskID: "A-1")
+        let updated = try XCTUnwrap(store.board?.columns.first(where: { $0.key == .todo })?.tasks.first)
+        XCTAssertEqual(updated.loggedSeconds, 42)
+        XCTAssertNotNil(updated.running)
+        XCTAssertEqual(api.toggleTimerCalls, ["A-1"])
+    }
+
+    func testToggleTimerFailureRevertsAndReportsError() async {
+        let api = FakeDayAPI()
+        api.boardResult = .success(makeBoard([makeTask("A-1", .todo)]))
+        api.toggleTimerResult = .failure(DayError.forbidden)
+        let store = DayStore(api: api, cache: makeCache())
+        await store.refresh()
+        await store.toggleTimer(taskID: "A-1")
+        XCTAssertNil(store.board?.columns.first(where: { $0.key == .todo })?.tasks.first?.running,
+                     "board deve voltar ao estado anterior")
+        XCTAssertNotNil(store.lastErrorMessage)
     }
 
     func testCommentDelegatesToAPI() async {
