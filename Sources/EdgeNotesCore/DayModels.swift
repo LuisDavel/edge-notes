@@ -175,4 +175,10 @@ public enum DayJSON {
         decoder.dateDecodingStrategy = .iso8601
         return decoder
     }()
+
+    public static let encoder: JSONEncoder = {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        return encoder
+    }()
 }

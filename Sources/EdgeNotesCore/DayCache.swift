@@ -13,9 +13,7 @@ public struct DayCache {
     }
 
     public func save(_ board: DayBoard) {
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        guard let data = try? encoder.encode(board) else { return }
+        guard let data = try? DayJSON.encoder.encode(board) else { return }
         try? data.write(to: fileURL, options: .atomic)
     }
 }

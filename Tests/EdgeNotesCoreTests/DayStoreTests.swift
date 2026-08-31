@@ -86,6 +86,26 @@ final class DayStoreTests: XCTestCase {
         XCTAssertEqual(api.updateCalls.first?.0, "A-1")
     }
 
+    func testSetStatusPreservesServerColumnShapeOnPartialBoard() async throws {
+        let task = makeTask("A-1", .todo)
+        let partialBoard = DayBoard(columns: [
+            DayColumn(key: .done, name: "Concluído", color: "#34C759", count: 0, tasks: []),
+            DayColumn(key: .todo, name: "A fazer", color: "#8E8E93", count: 1, tasks: [task]),
+        ])
+        let api = FakeDayAPI()
+        api.boardResult = .success(partialBoard)
+        let store = DayStore(api: api, cache: makeCache())
+        await store.refresh()
+        await store.setStatus(taskID: "A-1", to: .done)
+        let columns = try XCTUnwrap(store.board?.columns)
+        XCTAssertEqual(columns.count, 2, "no phantom columns should be added")
+        XCTAssertEqual(columns.map(\.key), [.done, .todo], "column order must match the server's")
+        XCTAssertEqual(columns.map(\.name), ["Concluído", "A fazer"])
+        XCTAssertEqual(columns.map(\.color), ["#34C759", "#8E8E93"])
+        XCTAssertEqual(columns.first(where: { $0.key == .done })?.tasks.map(\.id), ["A-1"])
+        XCTAssertTrue(columns.first(where: { $0.key == .todo })?.tasks.isEmpty == true)
+    }
+
     func testFailedMutationRevertsAndReportsError() async {
         let api = FakeDayAPI()
         api.boardResult = .success(makeBoard([makeTask("A-1", .todo)]))

@@ -122,8 +122,6 @@ public final class DayClient: DayAPI {
         let response: URLResponse
         do {
             (data, response) = try await session.data(for: request)
-        } catch is URLError {
-            throw DayError.offline
         } catch {
             throw DayError.offline
         }

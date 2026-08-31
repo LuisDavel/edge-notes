@@ -102,7 +102,7 @@ public final class DayStore: ObservableObject {
         }
     }
 
-    public func createTask(title: String, in status: DayStatus) async {
+    public func createTask(title: String) async {
         do {
             let task = try await api.createTask(title: title, priority: nil, backlog: false)
             applyLocalChange { tasks in tasks + [task] }
@@ -127,15 +127,17 @@ public final class DayStore: ObservableObject {
         guard let board else { return }
         let allTasks = board.columns.flatMap(\.tasks)
         let updatedTasks = transform(allTasks)
-        let columns = DayStatus.allCases.map { status -> DayColumn in
-            let originalColumn = board.columns.first(where: { $0.key == status })
-            let tasksForStatus = updatedTasks
-                .filter { $0.status == status }
+        let tasksByStatus = Dictionary(grouping: updatedTasks, by: \.status)
+        // Preserve the server's column identity, order, name, and color. A task whose new
+        // status has no matching column here (a column the current board doesn't carry) is
+        // simply left out of the visible board until the next refresh brings the real column.
+        let columns = board.columns.map { column -> DayColumn in
+            let tasksForStatus = (tasksByStatus[column.key] ?? [])
                 .sorted { $0.order < $1.order }
             return DayColumn(
-                key: status,
-                name: originalColumn?.name ?? status.displayName,
-                color: originalColumn?.color ?? "",
+                key: column.key,
+                name: column.name,
+                color: column.color,
                 count: tasksForStatus.count,
                 tasks: tasksForStatus)
         }
