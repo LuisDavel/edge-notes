@@ -143,6 +143,44 @@ public final class DayStore: ObservableObject {
         }
     }
 
+    /// Creates a task carrying a description — used by the note-to-Day
+    /// bridge (Task 8) to send a note's body along with its title.
+    /// `DayAPI.createTask` has no description parameter (the server-side
+    /// create endpoint doesn't take one), so this makes a second call —
+    /// `updateTask` with a description patch — right after creation, and
+    /// folds the description into the task handed back and stored on the
+    /// board, since the create response itself won't carry it.
+    ///
+    /// Returns the created task (with its server-assigned id) on success,
+    /// or `nil` if creation itself failed. A failure in the follow-up
+    /// description patch does not roll back the created task — it already
+    /// exists on the server — but is reported through `lastError` tagged to
+    /// the new task's id, same as any other mutation failure.
+    @discardableResult
+    public func createTask(title: String, description: String) async -> DayTask? {
+        let created: DayTask
+        do {
+            created = try await api.createTask(title: title, priority: nil, backlog: false)
+        } catch {
+            lastError = DayMutationError(taskID: nil, message: message(for: error))
+            return nil
+        }
+        var task = created
+        if !description.isEmpty {
+            do {
+                try await api.updateTask(id: created.id, patch: DayTaskPatch(description: description))
+                task = task.withDescription(description)
+                lastError = nil
+            } catch {
+                lastError = DayMutationError(taskID: created.id, message: message(for: error))
+            }
+        } else {
+            lastError = nil
+        }
+        applyLocalChange { tasks in tasks + [task] }
+        return task
+    }
+
     /// Starts or stops the task's timer. Optimistically flips the local
     /// `running` flag (mirroring `setStatus`/`setPriority`) so the play/stop
     /// indicator responds immediately, then reconciles with the full task
@@ -273,6 +311,12 @@ private extension DayTask {
     }
 
     func withRunning(_ running: DayRunningTimer?) -> DayTask {
+        DayTask(id: id, title: title, description: description, status: status, priority: priority,
+                order: order, assignee: assignee, labels: labels, loggedSeconds: loggedSeconds,
+                running: running, subtaskDone: subtaskDone, subtaskTotal: subtaskTotal, childCount: childCount)
+    }
+
+    func withDescription(_ description: String) -> DayTask {
         DayTask(id: id, title: title, description: description, status: status, priority: priority,
                 order: order, assignee: assignee, labels: labels, loggedSeconds: loggedSeconds,
                 running: running, subtaskDone: subtaskDone, subtaskTotal: subtaskTotal, childCount: childCount)

@@ -107,6 +107,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         kanbanController?.teardown()
         kanbanController = nil
         dayStore = nil
+        deck?.configureDayStore(nil)
 
         guard let credentials = DaySettings.credentials else { return }
 
@@ -119,5 +120,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         dayStore = newStore
         dayDeck = DayDeckController(store: newStore)
         kanbanController = KanbanWindowController(store: newStore)
+        deck?.configureDayStore(newStore)
     }
 }

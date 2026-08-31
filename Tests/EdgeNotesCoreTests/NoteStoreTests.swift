@@ -84,4 +84,12 @@ final class NoteStoreTests: XCTestCase {
         _ = try store.createNote(color: .blue, now: Date())
         XCTAssertEqual(fired, 1)
     }
+
+    func testSetDayTaskIDPersists() throws {
+        let store = try NoteStore(directory: dir)
+        let note = try store.createNote(color: .blue, now: Date(timeIntervalSince1970: 10))
+        try store.setDayTaskID(id: note.id, dayTaskID: "ACM-7", now: Date(timeIntervalSince1970: 20))
+        let reloaded = try NoteStore(directory: dir)
+        XCTAssertEqual(reloaded.notes.first?.meta.dayTaskID, "ACM-7")
+    }
 }

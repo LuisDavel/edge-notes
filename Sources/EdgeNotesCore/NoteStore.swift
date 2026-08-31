@@ -47,6 +47,13 @@ public final class NoteStore {
         }
     }
 
+    public func setDayTaskID(id: UUID, dayTaskID: String, now: Date) throws {
+        try mutate(id: id) { note in
+            note.meta.dayTaskID = dayTaskID
+            note.meta.updatedAt = now
+        }
+    }
+
     public func delete(id: UUID) throws {
         guard let index = notes.firstIndex(where: { $0.id == id }) else { return }
         try FileManager.default.removeItem(at: fileURL(for: id))

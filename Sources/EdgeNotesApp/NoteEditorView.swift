@@ -105,6 +105,7 @@ struct NoteEditorView: View {
                 }
             }
             Spacer(minLength: 4)
+            dayAction(for: note)
             FooterButton(title: "Delete", tint: .red.opacity(0.85)) {
                 confirmDelete()
             }
@@ -113,6 +114,39 @@ struct NoteEditorView: View {
                 close()
             }
             FooterButton(title: "Close") { close() }
+        }
+    }
+
+    /// The Day bridge action, or nothing at all if Day isn't configured.
+    ///
+    /// - No `dayTaskID` yet: a "Send to Day" button that creates a task
+    ///   titled after the note with the note's body as its description.
+    /// - Already linked: a status indicator (task id + current status, read
+    ///   live from `DayStore.board`) rather than a button. The brief asks
+    ///   for this to open the task in the left Day deck on click, but the
+    ///   two decks (`DeckController` for notes, `DayDeckController` for
+    ///   Day) don't currently know about each other — wiring that up would
+    ///   mean threading a reference between controllers that are otherwise
+    ///   deliberately independent. Left as a status-only label; opening the
+    ///   deck is the pending piece, called out in the task report.
+    @ViewBuilder
+    private func dayAction(for note: Note) -> some View {
+        if let dayStore = controller.dayStore {
+            if let dayTaskID = note.meta.dayTaskID {
+                let status = dayStore.board?.columns
+                    .flatMap(\.tasks)
+                    .first(where: { $0.id == dayTaskID })?
+                    .status
+                Text("Day: \(status?.displayName ?? dayTaskID)")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.black.opacity(0.55))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3.5)
+            } else {
+                FooterButton(title: "Send to Day") {
+                    controller.sendNoteToDay(noteID: noteID)
+                }
+            }
         }
     }
 

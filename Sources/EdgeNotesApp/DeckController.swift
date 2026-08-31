@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import Combine
 import EdgeNotesCore
 
 enum DeckState: Equatable {
@@ -12,6 +13,14 @@ enum DeckState: Equatable {
 final class DeckController: ObservableObject {
     let store: NoteStore
     @Published var state: DeckState = .collapsed
+
+    /// The Day integration's store, when credentials are configured — `nil`
+    /// otherwise. Set by `AppDelegate.configureDayDeck()`, the same place
+    /// that creates/tears down the Day deck, so this note-side deck and the
+    /// Day-side deck always agree on whether the integration exists. The
+    /// editor reads this to decide whether "Send to Day" is offered at all.
+    @Published private(set) var dayStore: DayStore?
+    private var dayStoreSubscription: AnyCancellable?
 
     private let panel: EdgePanel
 
@@ -194,5 +203,34 @@ final class DeckController: ObservableObject {
     func reposition() {
         guard let screen = NSScreen.screens.first else { return }
         panel.reposition(width: width, on: screen)
+    }
+
+    // MARK: - Day integration
+
+    /// Called by `AppDelegate.configureDayDeck()` whenever Day credentials
+    /// are set, changed, or removed. Forwards the store's own
+    /// `objectWillChange` into this controller's so the editor's "Send to
+    /// Day" indicator (which reads `dayStore.board` directly, not through
+    /// its own subscription) redraws when the board changes — e.g. a
+    /// background refresh updating the linked task's status.
+    func configureDayStore(_ newStore: DayStore?) {
+        dayStore = newStore
+        dayStoreSubscription = newStore?.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
+    }
+
+    /// Sends a note to Day: creates a task titled after the note with the
+    /// note's body as its description, then records the returned task id on
+    /// the note so the editor can switch to showing its status. No-op if
+    /// Day isn't configured or the note has vanished (e.g. deleted while the
+    /// request was in flight).
+    func sendNoteToDay(noteID: UUID) {
+        guard let dayStore else { return }
+        guard let note = store.notes.first(where: { $0.id == noteID }) else { return }
+        Task {
+            guard let created = await dayStore.createTask(title: note.meta.title, description: note.body) else { return }
+            try? store.setDayTaskID(id: noteID, dayTaskID: created.id, now: Date())
+        }
     }
 }

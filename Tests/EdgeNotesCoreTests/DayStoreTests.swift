@@ -278,4 +278,42 @@ final class DayStoreTests: XCTestCase {
         XCTAssertEqual(api.commentCalls.first?.0, "A-1")
         XCTAssertEqual(api.commentCalls.first?.1, "pronto")
     }
+
+    /// Backs the note-to-Day bridge (Task 8): `DayAPI.createTask` has no
+    /// description parameter, so sending the note's body across takes a
+    /// second call — `updateTask` with a `description` patch — right after
+    /// creation. This exercises that both calls happen, in order, and that
+    /// the task handed back to the caller (and folded into the board)
+    /// carries the description even though the create response didn't.
+    func testCreateTaskWithDescriptionPatchesAfterCreating() async {
+        let api = FakeDayAPI()
+        api.boardResult = .success(makeBoard([]))
+        api.createResult = .success(makeTask("A-9", .todo))
+        let store = DayStore(api: api, cache: makeCache())
+        await store.refresh()
+        let created = await store.createTask(title: "Office", description: "corpo da nota")
+        XCTAssertEqual(created?.id, "A-9")
+        XCTAssertEqual(created?.description, "corpo da nota")
+        XCTAssertEqual(api.updateCalls.first?.0, "A-9")
+        XCTAssertEqual(api.updateCalls.first?.1.description, "corpo da nota")
+        XCTAssertEqual(store.board?.columns.first(where: { $0.key == .todo })?.tasks.map(\.id), ["A-9"])
+        XCTAssertNil(store.lastError)
+    }
+
+    func testCreateTaskWithDescriptionSkipsPatchWhenEmpty() async {
+        let api = FakeDayAPI()
+        api.createResult = .success(makeTask("A-9", .todo))
+        let store = DayStore(api: api, cache: makeCache())
+        _ = await store.createTask(title: "Office", description: "")
+        XCTAssertTrue(api.updateCalls.isEmpty)
+    }
+
+    func testCreateTaskWithDescriptionReportsFailureFromCreate() async {
+        let api = FakeDayAPI()
+        api.createResult = .failure(DayError.forbidden)
+        let store = DayStore(api: api, cache: makeCache())
+        let created = await store.createTask(title: "Office", description: "corpo")
+        XCTAssertNil(created)
+        XCTAssertNotNil(store.lastError)
+    }
 }
