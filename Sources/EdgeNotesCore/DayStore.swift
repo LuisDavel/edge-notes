@@ -31,6 +31,16 @@ public final class DayStore: ObservableObject {
     @Published public private(set) var lastError: DayMutationError?
     @Published public private(set) var sprints: [DaySprint] = []
 
+    /// The sprint currently selected for `board`/`refresh` — `nil` means
+    /// "Active Sprint", `"backlog"` is the literal value the server
+    /// recognizes for unsprinted tasks (see `refresh(sprintID:)`). Lives
+    /// here, not in `KanbanView`'s `@State`, so the shared 60s poll
+    /// (`beginPolling`) and any surface's `refresh()` — including
+    /// `KanbanWindowController.show()` — stay on whatever sprint the user
+    /// actually picked instead of silently falling back to the active
+    /// sprint the moment a view-local `@State` wasn't there to carry it.
+    @Published public private(set) var selectedSprintID: String?
+
     private let api: DayAPI
     private let cache: DayCache
 
@@ -40,29 +50,44 @@ public final class DayStore: ObservableObject {
         self.board = cache.load()
     }
 
+    /// Changes the selected sprint and refreshes immediately with it. This
+    /// is the entry point views should call (rather than
+    /// `refresh(sprintID:)` directly) so the selection sticks for every
+    /// later no-argument `refresh()` — the poll's and `show()`'s.
+    public func setSprint(_ sprintID: String?) async {
+        selectedSprintID = sprintID
+        await refresh()
+    }
+
+    /// `sprintID` passed explicitly is forwarded as-is (letting a one-off
+    /// caller query a specific sprint without disturbing the selection).
+    /// Omitted, it falls back to `selectedSprintID` — this is what the
+    /// shared 60s poll and `KanbanWindowController.show()` call, and both
+    /// need to keep respecting whatever sprint is currently selected.
     public func refresh(sprintID: String? = nil) async {
+        let effectiveSprintID = sprintID ?? selectedSprintID
         state = .loading
         do {
-            let board = try await api.board(sprintID: sprintID)
+            let board = try await api.board(sprintID: effectiveSprintID)
             self.board = board
             cache.save(board)
             state = .loaded(stale: false)
-            lastError = nil
+            setError(nil)
         } catch let error as DayError {
             if error == .offline, board != nil {
                 state = .loaded(stale: true)
             } else {
                 state = .failed(error)
             }
-            lastError = DayMutationError(taskID: nil, message: message(for: error))
+            setError(DayMutationError(taskID: nil, message: message(for: error)))
         } catch {
             state = .failed(.decoding(String(describing: error)))
-            lastError = DayMutationError(taskID: nil, message: String(describing: error))
+            setError(DayMutationError(taskID: nil, message: String(describing: error)))
         }
     }
 
     public func setStatus(taskID: String, to status: DayStatus) async {
-        let previous = board
+        guard let previousTask = currentTask(taskID) else { return }
         applyLocalChange { tasks in
             tasks.map { task in
                 guard task.id == taskID else { return task }
@@ -71,15 +96,15 @@ public final class DayStore: ObservableObject {
         }
         do {
             try await api.updateTask(id: taskID, patch: DayTaskPatch(status: status))
-            lastError = nil
+            clearOwnError(taskID: taskID)
         } catch {
-            board = previous
-            lastError = DayMutationError(taskID: taskID, message: message(for: error))
+            revertTasks([taskID: previousTask])
+            setError(DayMutationError(taskID: taskID, message: message(for: error)))
         }
     }
 
     public func setPriority(taskID: String, to priority: DayPriority) async {
-        let previous = board
+        guard let previousTask = currentTask(taskID) else { return }
         applyLocalChange { tasks in
             tasks.map { task in
                 guard task.id == taskID else { return task }
@@ -88,15 +113,24 @@ public final class DayStore: ObservableObject {
         }
         do {
             try await api.updateTask(id: taskID, patch: DayTaskPatch(priority: priority))
-            lastError = nil
+            clearOwnError(taskID: taskID)
         } catch {
-            board = previous
-            lastError = DayMutationError(taskID: taskID, message: message(for: error))
+            revertTasks([taskID: previousTask])
+            setError(DayMutationError(taskID: taskID, message: message(for: error)))
         }
     }
 
     public func reorder(taskID: String, toStatus: DayStatus, orderedIDs: [String]) async {
-        let previous = board
+        // Snapshot only the tasks this reorder actually touches — the moved
+        // task plus every task named in `orderedIDs` — rather than the whole
+        // board. A board-wide snapshot/revert (the old approach) would undo
+        // any *other* mutation that lands on an unrelated task while this
+        // one is still in flight (see I2).
+        let affectedIDs = Set(orderedIDs).union([taskID])
+        let previousTasks = Dictionary(uniqueKeysWithValues:
+            (board?.columns.flatMap(\.tasks) ?? [])
+                .filter { affectedIDs.contains($0.id) }
+                .map { ($0.id, $0) })
         applyLocalChange { tasks in
             var tasksByID = Dictionary(uniqueKeysWithValues: tasks.map { ($0.id, $0) })
             guard let moved = tasksByID[taskID] else { return tasks }
@@ -113,10 +147,10 @@ public final class DayStore: ObservableObject {
         }
         do {
             try await api.reorder(taskID: taskID, toStatus: toStatus, orderedIDs: orderedIDs)
-            lastError = nil
+            clearOwnError(taskID: taskID)
         } catch {
-            board = previous
-            lastError = DayMutationError(taskID: taskID, message: message(for: error))
+            revertTasks(previousTasks)
+            setError(DayMutationError(taskID: taskID, message: message(for: error)))
         }
     }
 
@@ -129,17 +163,34 @@ public final class DayStore: ObservableObject {
         do {
             sprints = try await api.sprints()
         } catch {
-            lastError = DayMutationError(taskID: nil, message: message(for: error))
+            setError(DayMutationError(taskID: nil, message: message(for: error)))
         }
     }
 
-    public func createTask(title: String) async {
+    /// The left-edge deck's "+" control (I4). The server always creates new
+    /// tasks with `status: "todo"` and `sprintId: null` — the backlog —
+    /// regardless of which column the caller had open
+    /// (`day/lib/mutations.ts:createTask`; `backlog` is accepted for
+    /// call-site compatibility but doesn't change that). The deck has no
+    /// sprint-scoped view of its own to place the new card into that would
+    /// still be true after the very next 60s refresh, so — unlike
+    /// `createTask(title:description:)` below — this deliberately does
+    /// *not* apply the result to `board` optimistically; it would show a
+    /// card in a column it's about to disappear from the moment a real
+    /// (sprint-filtered) board comes back without it. Instead it reports
+    /// where the task actually landed through `lastError`, board-level, so
+    /// the click still visibly did something.
+    @discardableResult
+    public func createTaskInBacklog(title: String) async -> DayTask? {
         do {
-            let task = try await api.createTask(title: title, priority: nil, backlog: false)
-            applyLocalChange { tasks in tasks + [task] }
-            lastError = nil
+            let task = try await api.createTask(title: title, priority: nil, backlog: true)
+            setError(DayMutationError(
+                taskID: nil,
+                message: "Created “\(title)” in Backlog › To do — not shown in this view."))
+            return task
         } catch {
-            lastError = DayMutationError(taskID: nil, message: message(for: error))
+            setError(DayMutationError(taskID: nil, message: message(for: error)))
+            return nil
         }
     }
 
@@ -162,7 +213,7 @@ public final class DayStore: ObservableObject {
         do {
             created = try await api.createTask(title: title, priority: nil, backlog: false)
         } catch {
-            lastError = DayMutationError(taskID: nil, message: message(for: error))
+            setError(DayMutationError(taskID: nil, message: message(for: error)))
             return nil
         }
         var task = created
@@ -170,57 +221,76 @@ public final class DayStore: ObservableObject {
             do {
                 try await api.updateTask(id: created.id, patch: DayTaskPatch(description: description))
                 task = task.withDescription(description)
-                lastError = nil
+                setError(nil)
             } catch {
-                lastError = DayMutationError(taskID: created.id, message: message(for: error))
+                setError(DayMutationError(taskID: created.id, message: message(for: error)))
             }
         } else {
-            lastError = nil
+            setError(nil)
         }
         applyLocalChange { tasks in tasks + [task] }
         return task
     }
 
-    /// Starts or stops the task's timer. Optimistically flips the local
-    /// `running` flag (mirroring `setStatus`/`setPriority`) so the play/stop
-    /// indicator responds immediately, then reconciles with the full task
-    /// the server hands back — which also carries the authoritative
-    /// `loggedSeconds` — on success, or reverts the whole board on failure.
+    /// Starts or stops the task's timer, deriving which action to send from
+    /// the task's *current* local state — the server has no toggle
+    /// semantics, only explicit `"start"`/`"stop"` (see
+    /// `DayClient.setTimer`; C1). Optimistically flips the local `running`
+    /// flag so the play/stop indicator responds immediately, then
+    /// reconciles with the full task the server hands back — which also
+    /// carries the authoritative `loggedSeconds` — on success, or reverts
+    /// just this task (not the whole board; see I2) on failure.
     public func toggleTimer(taskID: String) async {
-        let previous = board
+        guard let previousTask = currentTask(taskID) else { return }
+        let startingUp = previousTask.running == nil
         applyLocalChange { tasks in
             tasks.map { task in
                 guard task.id == taskID else { return task }
-                return task.withRunning(task.running == nil ? DayRunningTimer(startedAt: Date()) : nil)
+                return task.withRunning(startingUp ? DayRunningTimer(startedAt: Date()) : nil)
             }
         }
         do {
-            let updated = try await api.toggleTimer(taskID: taskID)
+            let updated = try await api.setTimer(taskID: taskID, running: startingUp)
             applyLocalChange { tasks in
                 tasks.map { $0.id == updated.id ? updated : $0 }
             }
-            lastError = nil
+            clearOwnError(taskID: taskID)
         } catch {
-            board = previous
-            lastError = DayMutationError(taskID: taskID, message: message(for: error))
+            revertTasks([taskID: previousTask])
+            setError(DayMutationError(taskID: taskID, message: message(for: error)))
         }
     }
 
     public func comment(taskID: String, body: String) async {
         do {
             try await api.comment(taskID: taskID, body: body)
-            lastError = nil
+            clearOwnError(taskID: taskID)
         } catch {
-            lastError = DayMutationError(taskID: taskID, message: message(for: error))
+            setError(DayMutationError(taskID: taskID, message: message(for: error)))
         }
     }
 
-    /// Drops any pending mutation error. Called by the task detail card when
-    /// it appears, so a stale error from a previous mutation on this task
-    /// (or any other) doesn't render the instant the card opens, before the
-    /// user has done anything in it.
-    public func clearError() {
-        lastError = nil
+    /// Drops the pending mutation error, but only when it belongs to
+    /// `taskID`. Called by the task detail card when it appears, so a stale
+    /// error left over from a *previous* mutation on this same task doesn't
+    /// render the instant the card opens, before the user has done anything
+    /// in it. Before this took a task id (I5), it unconditionally cleared
+    /// `lastError` — so opening any card, including one unrelated to a
+    /// failed drag elsewhere on the board, silently erased the board-level
+    /// error reporting that failure.
+    public func clearError(for taskID: String) {
+        clearOwnError(taskID: taskID)
+    }
+
+    /// Clears `lastError` only when it's the caller's own error to clear —
+    /// i.e. it's already tagged to `taskID`. A mutation succeeding must not
+    /// blow away a still-pending error banner from an unrelated mutation
+    /// (a failed drag elsewhere on the board, say) just because two
+    /// mutations happened to be in flight around the same time — this was
+    /// the "success clears lastError unconditionally" minor folded into I5.
+    private func clearOwnError(taskID: String) {
+        guard lastError?.taskID == taskID else { return }
+        setError(nil)
     }
 
     // MARK: - Shared 60s refresh polling
@@ -256,6 +326,46 @@ public final class DayStore: ObservableObject {
     }
 
     // MARK: - Helpers
+
+    private func currentTask(_ id: String) -> DayTask? {
+        board?.columns.flatMap(\.tasks).first(where: { $0.id == id })
+    }
+
+    /// Restores exactly the given tasks (keyed by id) to the values
+    /// captured before an optimistic change, leaving every other task on
+    /// the board exactly as it currently is — including changes made by an
+    /// unrelated mutation, or a refresh, that landed while this one was
+    /// still in flight (I2). A task no longer present on the board (moved
+    /// out from under a concurrent refresh, deleted, …) is simply skipped.
+    private func revertTasks(_ snapshot: [String: DayTask]) {
+        guard !snapshot.isEmpty else { return }
+        applyLocalChange { tasks in
+            tasks.map { snapshot[$0.id] ?? $0 }
+        }
+    }
+
+    /// How long a mutation-failure banner stays up before auto-dismissing
+    /// (I5 / spec §7: "a message for a few seconds", not indefinitely and
+    /// not dependent on some unrelated event — a card being opened, another
+    /// refresh — to clear it).
+    private static let errorAutoDismissNanoseconds: UInt64 = 4_000_000_000
+    private var errorDismissTask: Task<Void, Never>?
+
+    /// Single writer for `lastError`. Setting a non-nil error schedules its
+    /// own auto-dismiss; setting `nil` (a success, or an explicit clear)
+    /// cancels any pending one so it doesn't fire late and blow away a
+    /// *newer* error that replaced it.
+    private func setError(_ error: DayMutationError?) {
+        lastError = error
+        errorDismissTask?.cancel()
+        errorDismissTask = nil
+        guard let error else { return }
+        errorDismissTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: Self.errorAutoDismissNanoseconds)
+            guard !Task.isCancelled, let self, self.lastError == error else { return }
+            self.lastError = nil
+        }
+    }
 
     private func applyLocalChange(_ transform: ([DayTask]) -> [DayTask]) {
         guard let board else { return }

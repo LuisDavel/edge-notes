@@ -6,27 +6,38 @@ import EdgeNotesCore
 /// selected — `DayTaskDetailView` docked to the right as a detail pane.
 ///
 /// Renders `store.board?.columns` exactly as the store hands it back. The
-/// board already omits empty columns and preserves the server's column
-/// order (see `DayStore.applyLocalChange`), so this view never rebuilds
-/// from `DayStatus.allCases` and never re-sorts — doing either would fight
-/// the store's optimistic-update bookkeeping and could reorder columns out
-/// from under a mutation in flight.
+/// server's `getBoard` always emits all four `STATUS_ORDER` columns (empty
+/// ones included) in a fixed order, and `DayStore.applyLocalChange`
+/// preserves that column list/order across every local mutation, so this
+/// view never rebuilds from `DayStatus.allCases` and never re-sorts —
+/// doing either would fight the store's optimistic-update bookkeeping and
+/// could reorder columns out from under a mutation in flight.
 struct KanbanView: View {
     @ObservedObject var store: DayStore
 
-    /// The literal value forwarded to `DayStore.refresh(sprintID:)` /
+    private static let backlogSprintID = "backlog"
+
+    /// The literal value forwarded to `DayStore.setSprint`/`refresh(sprintID:)` /
     /// `DayAPI.board(sprintID:)`. Per the Day server's own `getBoard` query:
     /// `sprintId == "backlog"` selects the tasks with no sprint; any other
     /// value, including a missing/`nil` parameter, selects the requested
     /// sprint or — when `nil` — the currently ACTIVE sprint. So `nil` is
     /// "Active Sprint" (also the deck's own default load), and "Backlog" is
-    /// the literal string `"backlog"`, not `nil`. Defaults to `nil` (Active
-    /// Sprint): opening the window lands on whatever board is already on
-    /// screen rather than forcing an extra fetch, and matches what a user
-    /// expects a kanban board to show by default.
-    @State private var selectedSprintID: String?
-
-    private static let backlogSprintID = "backlog"
+    /// the literal string `"backlog"`, not `nil`.
+    ///
+    /// Lives in `DayStore.selectedSprintID`, not view-local `@State` (C3):
+    /// the shared 60s poll and `KanbanWindowController.show()` both call
+    /// `DayStore.refresh()` with no argument, and before this fix that
+    /// always meant "Active Sprint" regardless of what the picker below
+    /// showed — so picking "Backlog" and waiting a minute would silently
+    /// flip the visible board back to the active sprint while the picker
+    /// still said "Backlog". A `Binding` derived from the store keeps the
+    /// picker itself unchanged while fixing that.
+    private var selectedSprintID: Binding<String?> {
+        Binding(
+            get: { store.selectedSprintID },
+            set: { newValue in Task { await store.setSprint(newValue) } })
+    }
     @State private var searchText: String = ""
     @State private var selectedTaskID: String?
 
@@ -98,9 +109,21 @@ struct KanbanView: View {
 
     // MARK: - Top bar
 
+    /// I1: mirrors `DayDeckView.writesDisabledReason` for this window —
+    /// disables drag-and-drop (the kanban's only write surface outside
+    /// `DayTaskDetailView`, which disables its own controls independently)
+    /// when the token can't write or the board is a stale offline cache.
+    private var writesDisabledReason: String? {
+        switch store.state {
+        case .failed(.forbidden): return "Read-only — your Day token can't make changes"
+        case .loaded(stale: true): return "Offline — showing the last cached board"
+        default: return nil
+        }
+    }
+
     private var topBar: some View {
         HStack(spacing: 12) {
-            Picker("Sprint", selection: $selectedSprintID) {
+            Picker("Sprint", selection: selectedSprintID) {
                 Text("Active Sprint").tag(String?.none)
                 Text("Backlog").tag(String?.some(Self.backlogSprintID))
                 ForEach(store.sprints) { sprint in
@@ -109,9 +132,6 @@ struct KanbanView: View {
             }
             .labelsHidden()
             .frame(width: 220)
-            .onChange(of: selectedSprintID) { _, newValue in
-                Task { await store.refresh(sprintID: newValue) }
-            }
 
             TextField("Search tasks…", text: $searchText)
                 .textFieldStyle(.roundedBorder)
@@ -119,22 +139,42 @@ struct KanbanView: View {
 
             Spacer()
 
-            // Board-level mutation errors (a failed drag reorder, a failed
-            // refresh) surface here rather than inside a card, since they
-            // aren't necessarily about whichever task happens to be
-            // selected. Task-scoped errors are filtered out — those render
-            // inside `DayTaskDetailView` for the task they belong to.
-            if let error = store.lastError, error.taskID == nil {
-                Text(error.message)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.white)
-                    .lineLimit(2)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(RoundedRectangle(cornerRadius: 6).fill(.red.opacity(0.85)))
+            // I1: a 401 gets an explicit "fix it" action; everything else
+            // (403 read-only, an offline/stale cache, or a plain
+            // board-level mutation error — a failed drag reorder, a failed
+            // refresh) is a plain strip. Task-scoped errors are filtered
+            // out here — those render inside `DayTaskDetailView` for the
+            // task they belong to.
+            if case .failed(.unauthorized) = store.state {
+                statusBanner(
+                    "Day sign-in expired.", actionTitle: "Open Day Settings",
+                    action: { NotificationCenter.default.post(name: .openDaySettingsRequested, object: nil) })
+            } else if let reason = writesDisabledReason {
+                statusBanner(reason)
+            } else if let error = store.lastError, error.taskID == nil {
+                statusBanner(error.message)
             }
         }
         .padding(12)
+    }
+
+    private func statusBanner(_ message: String, actionTitle: String? = nil, action: (() -> Void)? = nil) -> some View {
+        HStack(spacing: 6) {
+            Text(message)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.white)
+                .lineLimit(2)
+            if let actionTitle, let action {
+                Button(actionTitle, action: action)
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.white)
+                    .underline()
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(RoundedRectangle(cornerRadius: 6).fill(.red.opacity(0.85)))
     }
 
     // MARK: - Columns
@@ -239,6 +279,12 @@ struct KanbanView: View {
     /// are presently filtered out of view; dropping on the column's
     /// background (i.e. `before == nil`) appends to the end.
     private func handleDrop(draggedID: String, before targetTaskID: String?, in column: DayColumn) {
+        // I1: a read-only token or a stale offline board must not accept a
+        // drop that will only round-trip to fail (or, worse, apply
+        // optimistically and then revert) — block it here, the single
+        // choke point both the column-background and per-card drop
+        // destinations funnel through.
+        guard writesDisabledReason == nil else { return }
         let currentIDs = column.tasks.map(\.id)
         var orderedIDs = currentIDs
         orderedIDs.removeAll { $0 == draggedID }

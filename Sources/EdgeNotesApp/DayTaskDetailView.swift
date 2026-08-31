@@ -122,6 +122,20 @@ struct DayTaskDetailView: View {
     @State private var isSendingComment = false
     @State private var isTogglingTimer = false
 
+    /// I1: disable every write control (status, priority, timer, comment)
+    /// when the token's role can't write (403) or the board on screen is a
+    /// stale offline cache — the spec (§3/§7) wants writes blocked with the
+    /// reason visible, not a click that silently no-ops or round-trips to
+    /// fail. `KanbanView.writesDisabledReason` mirrors this for the kanban
+    /// window's drag-and-drop.
+    private var writesDisabledReason: String? {
+        switch store.state {
+        case .failed(.forbidden): return "Read-only — your Day token can't make changes"
+        case .loaded(stale: true): return "Offline — changes will be retried once you're back online"
+        default: return nil
+        }
+    }
+
     /// Looked up fresh from the store on every render rather than passed in,
     /// so a status/priority change elsewhere (another window, the periodic
     /// refresh) is reflected here immediately without this view owning a
@@ -156,11 +170,13 @@ struct DayTaskDetailView: View {
             // when it is actually about *this* task.
             if let error = store.lastError, error.taskID == task.id {
                 errorStrip(error.message)
+            } else if let reason = writesDisabledReason {
+                errorStrip(reason)
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {
-                    statusMenu(task)
-                    priorityMenu(task)
+                    statusMenu(task).disabled(writesDisabledReason != nil)
+                    priorityMenu(task).disabled(writesDisabledReason != nil)
                     if let assignee = task.assignee {
                         Text("Assignee: \(assignee.name)")
                             .font(.system(size: 11))
@@ -204,7 +220,7 @@ struct DayTaskDetailView: View {
         // error left over from a previous mutation on this same task would
         // render the instant the card appears, before the user has done
         // anything in this session with it.
-        .onAppear { store.clearError() }
+        .onAppear { store.clearError(for: task.id) }
     }
 
     // MARK: - Header (Task 5's title, extended with the task id)
@@ -285,7 +301,7 @@ struct DayTaskDetailView: View {
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
-            .disabled(isTogglingTimer)
+            .disabled(isTogglingTimer || writesDisabledReason != nil)
             Text(Self.formattedDuration(task.loggedSeconds))
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
@@ -310,6 +326,7 @@ struct DayTaskDetailView: View {
                 .padding(.vertical, 4)
                 .background(RoundedRectangle(cornerRadius: 6).fill(.black.opacity(0.05)))
                 .onSubmit { sendComment(taskID: task.id, body: trimmed) }
+                .disabled(writesDisabledReason != nil)
             Button {
                 sendComment(taskID: task.id, body: trimmed)
             } label: {
@@ -317,7 +334,7 @@ struct DayTaskDetailView: View {
                     .font(.system(size: 16))
             }
             .buttonStyle(.plain)
-            .disabled(trimmed.isEmpty || isSendingComment)
+            .disabled(trimmed.isEmpty || isSendingComment || writesDisabledReason != nil)
         }
     }
 

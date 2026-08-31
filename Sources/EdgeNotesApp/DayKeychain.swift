@@ -124,4 +124,13 @@ extension Notification.Name {
     /// left-edge deck (Task 5) will observe this to reconfigure itself;
     /// this task only posts it.
     static let dayCredentialsChanged = Notification.Name("dayCredentialsChanged")
+
+    /// Posted by a Day surface's status banner (I1) — the deck, the kanban
+    /// window — when the user clicks the "Open Day Settings" action on an
+    /// expired-token (401) notice. `AppDelegate` is the only thing that
+    /// owns `DaySettingsWindowController`, so a plain SwiftUI view has no
+    /// direct way to call `.show()`; posting this notification is the same
+    /// indirection `dayCredentialsChanged` already uses in the other
+    /// direction.
+    static let openDaySettingsRequested = Notification.Name("openDaySettingsRequested")
 }

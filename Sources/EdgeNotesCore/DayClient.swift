@@ -42,7 +42,7 @@ public protocol DayAPI: Sendable {
     func updateTask(id: String, patch: DayTaskPatch) async throws
     func reorder(taskID: String, toStatus: DayStatus?, orderedIDs: [String]) async throws
     func comment(taskID: String, body: String) async throws
-    func toggleTimer(taskID: String) async throws -> DayTask
+    func setTimer(taskID: String, running: Bool) async throws -> DayTask
     func sprints() async throws -> [DaySprint]
 }
 
@@ -67,16 +67,29 @@ public final class DayClient: DayAPI {
         try await send("/tasks/\(id)", decode: DayTask.self)
     }
 
+    /// `POST /tasks` on the real server returns the raw `prisma.task.create`
+    /// row (`day/app/api/tasks/route.ts` → `day/lib/mutations.ts:createTask`),
+    /// not the `TaskDetailDTO`/`TaskDTO` shape `DayTask` decodes: it is
+    /// missing `labels`, `loggedSeconds`, `subtaskDone`, `subtaskTotal`,
+    /// `childCount`, and carries `description: null` instead of `""`.
+    /// Decoding that response as `DayTask` always throws `.decoding`. So
+    /// this only decodes the one field it actually needs — the new task's
+    /// server-assigned `id` — from the create response, then hydrates the
+    /// full `DayTask` with a follow-up `GET /tasks/{id}` (`task(id:)`),
+    /// which the server backs with `getTaskDetail`/`toTaskDTO` and does
+    /// decode cleanly.
     public func createTask(title: String, priority: DayPriority?, backlog: Bool) async throws -> DayTask {
         struct Body: Encodable {
             let title: String
             let priority: DayPriority?
             let backlog: Bool
         }
-        return try await send(
+        struct CreateResponse: Decodable { let id: String }
+        let created = try await send(
             "/tasks", method: "POST",
             body: Body(title: title, priority: priority, backlog: backlog),
-            decode: DayTask.self)
+            decode: CreateResponse.self)
+        return try await task(id: created.id)
     }
 
     public func updateTask(id: String, patch: DayTaskPatch) async throws {
@@ -102,8 +115,18 @@ public final class DayClient: DayAPI {
         try await sendNoContent("/comments", method: "POST", body: Body(taskId: taskID, body: body))
     }
 
-    public func toggleTimer(taskID: String) async throws -> DayTask {
-        try await send("/tasks/\(taskID)/timer", method: "POST", decode: DayTask.self)
+    /// The server requires an explicit `{"action":"start"|"stop"}` body
+    /// (`day/app/api/tasks/[id]/timer/route.ts` does
+    /// `const { action } = await req.json()` and 400s on anything else; an
+    /// empty body makes `req.json()` throw, a 500). There is no
+    /// toggle-in-place semantics server-side, so the caller must say which
+    /// way it wants the timer to go.
+    public func setTimer(taskID: String, running: Bool) async throws -> DayTask {
+        struct Body: Encodable { let action: String }
+        return try await send(
+            "/tasks/\(taskID)/timer", method: "POST",
+            body: Body(action: running ? "start" : "stop"),
+            decode: DayTask.self)
     }
 
     public func sprints() async throws -> [DaySprint] {

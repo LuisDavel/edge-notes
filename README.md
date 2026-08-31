@@ -45,29 +45,37 @@ your tasks live alongside your notes.
 3. **Save** stores the base URL in `UserDefaults` and the token in the
    macOS **Keychain** — the token is never written to disk in the clear and
    never appears in a note file. Saving immediately connects (or
-   reconnects) the integration; clearing the settings disconnects it.
+   reconnects) the integration. **Disconnect** clears both (removing the
+   token from the Keychain and the URL from `UserDefaults`) and tears down
+   the deck and kanban window.
 
 ### The left-edge deck
 
 Once connected, a second pill deck appears on the **left** edge of the
 screen (notes stay on the right). At rest it's a thin pill; hover to fan
 it into the board's columns (To do / In progress / In review / Done, per
-your Day board), each with a task count. Click a column to see its tasks,
-and click a task to open its detail card — status, priority, a timer you
-can start/stop, and comments. Drag a task between columns, or within a
-column to reorder it, and the change is sent to Day immediately (and
-reverted if the request fails). Use the menu bar's **Open Kanban** for the
-same board in a full window with a sprint/backlog picker.
+your Day board), each with a task count. Click a column to see its tasks
+(and add one inline with the **+** button — new tasks always land in the
+Backlog, per Day's own create endpoint, so it won't appear in this column
+once the board refreshes), and click a task to open its detail card —
+status, priority, a timer you can start/stop, and comments. Use the menu
+bar's **Open Kanban** for the same board in a full window with a
+sprint/backlog picker **and drag-and-drop**: drag a task between columns,
+or within a column to reorder it, and the change is sent to Day
+immediately (and reverted if the request fails). Drag-and-drop is
+kanban-window-only — the left-edge deck doesn't support it.
 
 ### Offline behaviour
 
 The board is cached to disk after every successful load. If a refresh
-fails because the network is unreachable, the deck keeps showing the last
-cached board (marked stale) rather than going blank, and retries silently
-every 60 seconds while any Day surface (the deck or the kanban window) is
-visible. A mutation made while offline (status/priority change, reorder,
-drag) is applied locally right away and rolled back if the server call
-ultimately fails, with the error shown on the task it affected.
+fails because the network is unreachable, the deck and kanban window keep
+showing the last cached board rather than going blank, with a discreet
+"offline — showing the last cached board" strip, and retry silently every
+60 seconds while any Day surface (the deck or the kanban window) is
+visible. Writes are blocked while offline (and while your Day token's role
+can't write) — the same strip explains why. A mutation made just before
+going offline is applied locally right away and rolled back if the server
+call ultimately fails, with the error shown on the task it affected.
 
 ### Sending a note to Day
 

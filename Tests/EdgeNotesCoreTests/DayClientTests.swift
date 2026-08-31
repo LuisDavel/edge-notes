@@ -156,13 +156,88 @@ final class DayClientTests: XCTestCase {
         }
     }
 
-    func testCreateTaskSendsTitleAndPriority() async throws {
-        respond(201, #"{"id":"A-9","title":"nova","description":"","status":"todo","priority":"high","order":0,"loggedSeconds":0,"subtaskDone":0,"subtaskTotal":0,"childCount":0,"assignee":null,"labels":[],"running":null}"#)
+    /// C2: `POST /tasks` on the real Day server returns the raw
+    /// `prisma.task.create` row — no `labels`, `loggedSeconds`,
+    /// `subtaskDone`/`subtaskTotal`/`childCount`, and `description: null`
+    /// rather than `""` (see `day/app/api/tasks/route.ts` +
+    /// `day/lib/mutations.ts:createTask`). Decoding that row directly as
+    /// `DayTask` always throws. `DayClient.createTask` must not attempt to:
+    /// it decodes only `id` from the create response, then hydrates the
+    /// full task with a follow-up `GET /tasks/{id}` (`DayAPI.task(id:)`),
+    /// which the server backs with `getTaskDetail` — a superset that
+    /// decodes cleanly. This asserts both requests happen, in order, and
+    /// that the value handed back is the *hydrated* task, not anything
+    /// decoded from the crude create response.
+    func testCreateTaskHydratesViaFollowUpGetBecauseCreateResponseIsBareRow() async throws {
+        var requestedPaths: [String] = []
+        FakeURLProtocol.handler = { request in
+            requestedPaths.append(request.url?.path ?? "")
+            if request.httpMethod == "POST" {
+                // A bare Prisma row: no labels/loggedSeconds/subtask*/childCount,
+                // description is null rather than "".
+                let body = ##"{"id":"A-9","workspaceId":"w1","title":"nova","description":null,"priority":"none","status":"todo","sprintId":null,"order":-1,"assigneeId":null,"parentId":null}"##
+                let response = HTTPURLResponse(url: request.url!, statusCode: 201, httpVersion: nil, headerFields: nil)!
+                return (response, Data(body.utf8))
+            } else {
+                let body = ##"{"id":"A-9","title":"nova","description":"","status":"todo","priority":"high","order":-1,"loggedSeconds":0,"subtaskDone":0,"subtaskTotal":0,"childCount":0,"assignee":null,"labels":[],"running":null}"##
+                let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                return (response, Data(body.utf8))
+            }
+        }
         let task = try await client.createTask(title: "nova", priority: .high, backlog: false)
         XCTAssertEqual(task.id, "A-9")
-        let body = try XCTUnwrap(FakeURLProtocol.lastBody)
+        XCTAssertEqual(task.priority, .high, "must reflect the hydrated GET, not the bare POST row")
+        XCTAssertEqual(requestedPaths, ["/api/tasks", "/api/tasks/A-9"])
+    }
+
+    func testCreateTaskSendsTitleAndPriorityInThePOSTBody() async throws {
+        var capturedPOSTBody: Data?
+        FakeURLProtocol.handler = { request in
+            if request.httpMethod == "POST" {
+                // `FakeURLProtocol.startLoading` has already captured this
+                // request's body into `lastBody` (handling the
+                // httpBody-vs-httpBodyStream wrinkle) by the time this
+                // handler runs, so read it from there rather than
+                // `request.httpBody` directly, which URLSession may not
+                // populate the same way once the request has gone through
+                // its internal protocol machinery.
+                capturedPOSTBody = FakeURLProtocol.lastBody
+                let response = HTTPURLResponse(url: request.url!, statusCode: 201, httpVersion: nil, headerFields: nil)!
+                return (response, Data(##"{"id":"A-9"}"##.utf8))
+            } else {
+                let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                let body = ##"{"id":"A-9","title":"nova","description":"","status":"todo","priority":"high","order":0,"loggedSeconds":0,"subtaskDone":0,"subtaskTotal":0,"childCount":0,"assignee":null,"labels":[],"running":null}"##
+                return (response, Data(body.utf8))
+            }
+        }
+        _ = try await client.createTask(title: "nova", priority: .high, backlog: false)
+        let body = try XCTUnwrap(capturedPOSTBody)
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
         XCTAssertEqual(object["title"] as? String, "nova")
         XCTAssertEqual(object["priority"] as? String, "high")
+    }
+
+    /// C1: the Day server's timer endpoint (`day/app/api/tasks/[id]/timer/route.ts`)
+    /// does `const { action } = await req.json()` and 400s on anything but
+    /// `"start"`/`"stop"` — there is no toggle semantics server-side, and an
+    /// empty body makes `req.json()` throw (500). `DayClient` must send the
+    /// desired action explicitly.
+    func testSetTimerSendsStartAction() async throws {
+        respond(200, #"{"id":"A-1","title":"t","description":"","status":"todo","priority":"none","order":0,"loggedSeconds":0,"subtaskDone":0,"subtaskTotal":0,"childCount":0,"assignee":null,"labels":[],"running":null}"#)
+        _ = try await client.setTimer(taskID: "A-1", running: true)
+        let request = try XCTUnwrap(FakeURLProtocol.lastRequest)
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.url?.path, "/api/tasks/A-1/timer")
+        let body = try XCTUnwrap(FakeURLProtocol.lastBody)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        XCTAssertEqual(object["action"] as? String, "start")
+    }
+
+    func testSetTimerSendsStopAction() async throws {
+        respond(200, #"{"id":"A-1","title":"t","description":"","status":"todo","priority":"none","order":0,"loggedSeconds":0,"subtaskDone":0,"subtaskTotal":0,"childCount":0,"assignee":null,"labels":[],"running":null}"#)
+        _ = try await client.setTimer(taskID: "A-1", running: false)
+        let body = try XCTUnwrap(FakeURLProtocol.lastBody)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        XCTAssertEqual(object["action"] as? String, "stop")
     }
 }

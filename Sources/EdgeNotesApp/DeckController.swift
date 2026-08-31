@@ -265,7 +265,20 @@ final class DeckController: ObservableObject {
                 dayActionError = (noteID, dayStore.lastError?.message ?? "Could not send to Day.")
                 return
             }
-            try? store.setDayTaskID(id: noteID, dayTaskID: created.id, now: Date())
+            do {
+                try store.setDayTaskID(id: noteID, dayTaskID: created.id, now: Date())
+            } catch {
+                // M7: the task exists on Day (it was just created) but the
+                // local link write failed — swallowing this with `try?`
+                // left the note unlinked pointing at a real, now-orphaned
+                // Day task, and the very next "Send to Day" click would
+                // create a duplicate since nothing here would know one
+                // already exists. Surface it so the user knows not to
+                // retry blindly.
+                dayActionError = (noteID, "Sent to Day as \(created.id), but couldn't save the link locally " +
+                    "(\(error.localizedDescription)). Retrying will create a duplicate task.")
+                return
+            }
             // The task was created (and is now linked) even if the
             // follow-up description patch failed — `DayStore.createTask`
             // tags that failure to the new task's id rather than rolling

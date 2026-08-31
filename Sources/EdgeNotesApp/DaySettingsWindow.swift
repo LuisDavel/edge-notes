@@ -97,6 +97,18 @@ private struct DaySettingsView: View {
                 }
                 .disabled(isTesting || isBlank(baseURLText) || isBlank(token))
 
+                // M2: the README has always claimed "clearing the settings
+                // disconnects it", but there was no control that actually
+                // cleared them — `DayKeychain.deleteToken()` existed but was
+                // never called from the UI. Only shown once something is
+                // actually configured, so a fresh, never-connected install
+                // doesn't offer to disconnect a connection that doesn't exist.
+                if DaySettings.credentials != nil {
+                    Button("Disconnect", role: .destructive) {
+                        disconnect()
+                    }
+                }
+
                 Spacer()
 
                 Button("Save") {
@@ -170,6 +182,21 @@ private struct DaySettingsView: View {
             return
         }
         DaySettings.baseURL = url
+        testResult = nil
+        NotificationCenter.default.post(name: .dayCredentialsChanged, object: nil)
+    }
+
+    /// M2: clears both halves of the stored configuration — the Keychain
+    /// token and the UserDefaults base URL — and posts the same
+    /// notification `save()` does, which `AppDelegate.configureDayDeck()`
+    /// observes; with no credentials left, that tears the deck and kanban
+    /// window down, matching what the README has always said "clearing the
+    /// settings" does.
+    private func disconnect() {
+        DayKeychain.deleteToken()
+        DaySettings.baseURL = nil
+        baseURLText = ""
+        token = ""
         testResult = nil
         NotificationCenter.default.post(name: .dayCredentialsChanged, object: nil)
     }

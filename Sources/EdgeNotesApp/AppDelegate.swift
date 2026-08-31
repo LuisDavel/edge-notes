@@ -12,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var dayDeck: DayDeckController?
     private var kanbanController: KanbanWindowController?
     private var dayCredentialsObserver: NSObjectProtocol?
+    private var openDaySettingsObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Installed first, and unconditionally: even the failure path below
@@ -44,6 +45,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             forName: .dayCredentialsChanged, object: nil, queue: .main
         ) { [weak self] _ in
             Task { @MainActor in self?.configureDayDeck() }
+        }
+        // I1: the deck/kanban status banner's "Open Day Settings" action
+        // (shown on a 401) has no direct reference to
+        // `daySettingsController` — only `AppDelegate` does — so it reaches
+        // it through this notification instead.
+        openDaySettingsObserver = NotificationCenter.default.addObserver(
+            forName: .openDaySettingsRequested, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.openDaySettings() }
         }
 
         let deckOnChange = store.onChange

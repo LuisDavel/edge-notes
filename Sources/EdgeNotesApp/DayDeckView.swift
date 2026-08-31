@@ -73,9 +73,24 @@ struct DayDeckView: View {
     @State private var addIsHovering: Bool = false
     @State private var pillIsHovering: Bool = false
     @State private var pendingFan: DispatchWorkItem?
+    @State private var isAddingTask: Bool = false
+    @State private var newTaskTitle: String = ""
 
     private var columns: [DayColumn] {
         controller.store.board?.columns ?? []
+    }
+
+    /// I1: whether write actions (status/priority/timer/comment/drag/create)
+    /// should be disabled — the token's role can't write (403), or the
+    /// board on screen is a stale offline cache the server hasn't confirmed.
+    /// Kept minimal on purpose: a `disabled()` plus a short reason string,
+    /// not a dedicated "read-only mode" UI.
+    private var writesDisabledReason: String? {
+        switch controller.store.state {
+        case .failed(.forbidden): return "Read-only — your Day token can't make changes"
+        case .loaded(stale: true): return "Offline — showing the last cached board"
+        default: return nil
+        }
     }
 
     var body: some View {
@@ -92,6 +107,16 @@ struct DayDeckView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        // I1/I3: a discreet, board-level status strip — an expired token
+        // (with a one-click way to fix it), an offline/stale mark, or a
+        // plain mutation error (a failed create, a failed initial load).
+        // Only shown once something is actually open — the collapsed pill
+        // has no room and no context for it.
+        .overlay(alignment: .topLeading) {
+            if controller.state != .collapsed {
+                deckStatusBanner
+            }
+        }
         .onHover { hovering in
             if !hovering {
                 addIsHovering = false
@@ -195,9 +220,13 @@ struct DayDeckView: View {
                 }
             }
         } else {
-            // The column emptied out from under us (every task moved/done)
-            // — the board omits empty columns entirely. Fall back to the fan
-            // instead of showing a stale/empty card.
+            // Reached only if `status` itself has no column on the current
+            // board at all — `getBoard` maps `STATUS_ORDER` and always
+            // emits all four columns (see `DayStore.applyLocalChange`'s own
+            // comment), so this isn't "the column emptied out" (an empty
+            // column is still a column, with zero tasks); it's a defensive
+            // fallback for a board shape this app doesn't expect. Falls
+            // back to the fan rather than showing a stale/broken card.
             fannedDeck
                 .onAppear { controller.setState(.fanned) }
         }
@@ -216,6 +245,9 @@ struct DayDeckView: View {
                 addTaskButton
             }
             Rectangle().fill(.black.opacity(0.06)).frame(height: 1)
+            if isAddingTask {
+                newTaskComposer
+            }
             ScrollView {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(column.tasks) { task in
@@ -238,7 +270,7 @@ struct DayDeckView: View {
 
     private var addTaskButton: some View {
         Button {
-            Task { await controller.store.createTask(title: "New task") }
+            withAnimation { isAddingTask = true }
         } label: {
             Image(systemName: "plus")
                 .font(.system(size: 10, weight: .semibold))
@@ -249,6 +281,37 @@ struct DayDeckView: View {
         }
         .buttonStyle(SpringButtonStyle(pressedScale: 0.88))
         .hoverSpring($addIsHovering)
+        .disabled(writesDisabledReason != nil)
+        .opacity(writesDisabledReason != nil ? 0.4 : 1)
+    }
+
+    /// I4: an inline title field, opened by `addTaskButton`, in place of the
+    /// old fixed "New task" title. The server always creates the task in
+    /// the backlog as `todo` regardless of which column is open here (see
+    /// `DayStore.createTaskInBacklog`), so submitting neither optimistically
+    /// inserts a card into this column nor claims the task landed here —
+    /// the store reports where it actually went through the board-level
+    /// status banner instead.
+    private var newTaskComposer: some View {
+        TextField("New task title…", text: $newTaskTitle, onCommit: submitNewTask)
+            .textFieldStyle(.plain)
+            .font(.system(size: 11))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 4)
+            .background(RoundedRectangle(cornerRadius: 6).fill(.black.opacity(0.05)))
+            .onExitCommand { cancelNewTask() }
+    }
+
+    private func submitNewTask() {
+        let title = newTaskTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        cancelNewTask()
+        guard !title.isEmpty else { return }
+        Task { await controller.store.createTaskInBacklog(title: title) }
+    }
+
+    private func cancelNewTask() {
+        isAddingTask = false
+        newTaskTitle = ""
     }
 
     // MARK: - Open task
@@ -290,6 +353,49 @@ struct DayDeckView: View {
 
     // The task detail card itself lives in `DayTaskDetailView.swift` — see
     // `DayTaskDetailView`.
+
+    // MARK: - Board-level status banner (I1, I3)
+
+    /// One discreet strip, at most one line of text at a time, covering
+    /// everything the spec's error model (§3/§7) asks for that has nowhere
+    /// else to render on this surface: an expired token (401, with a
+    /// one-click way to fix it), a forbidden/read-only token (403), an
+    /// offline/stale cache, or a plain board-level mutation failure — a
+    /// failed initial load, a failed create — that `store.lastError`
+    /// already carries but that, before this, only the kanban window's
+    /// picker row showed.
+    @ViewBuilder
+    private var deckStatusBanner: some View {
+        if case .failed(.unauthorized) = controller.store.state {
+            statusBanner(
+                "Day sign-in expired.", actionTitle: "Open Day Settings",
+                action: { NotificationCenter.default.post(name: .openDaySettingsRequested, object: nil) })
+        } else if case .loaded(stale: true) = controller.store.state {
+            statusBanner("Offline — showing the last cached board.")
+        } else if let error = controller.store.lastError, error.taskID == nil {
+            statusBanner(error.message)
+        }
+    }
+
+    private func statusBanner(_ message: String, actionTitle: String? = nil, action: (() -> Void)? = nil) -> some View {
+        HStack(spacing: 6) {
+            Text(message)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.white)
+                .lineLimit(2)
+            if let actionTitle, let action {
+                Button(actionTitle, action: action)
+                    .buttonStyle(.plain)
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.white)
+                    .underline()
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(RoundedRectangle(cornerRadius: 6).fill(.red.opacity(0.85)))
+        .padding(8)
+    }
 
     // MARK: - Fan scheduling (mirrors DeckView)
 
