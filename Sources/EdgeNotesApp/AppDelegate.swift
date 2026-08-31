@@ -8,6 +8,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var store: NoteStore!
     private var libraryController: LibraryWindowController!
     private var daySettingsController: DaySettingsWindowController!
+    private var dayStore: DayStore?
+    private var dayDeck: DayDeckController?
+    private var dayCredentialsObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Installed first, and unconditionally: even the failure path below
@@ -34,6 +37,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         libraryController = LibraryWindowController(store: store)
         daySettingsController = DaySettingsWindowController()
+
+        configureDayDeck()
+        dayCredentialsObserver = NotificationCenter.default.addObserver(
+            forName: .dayCredentialsChanged, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.configureDayDeck() }
+        }
+
         let deckOnChange = store.onChange
         store.onChange = {
             deckOnChange?()
@@ -70,5 +81,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc @MainActor private func openDaySettings() {
         daySettingsController.show()
+    }
+
+    /// Creates the left-edge Day deck (and its backing `DayStore`) when
+    /// credentials exist, and tears it down when they don't. Called once at
+    /// launch and again every time `.dayCredentialsChanged` fires, so saving
+    /// new credentials in `DaySettingsWindow` reconnects with a fresh
+    /// `DayClient` rather than leaving the old (now-wrong) one in place.
+    @MainActor private func configureDayDeck() {
+        dayDeck?.teardown()
+        dayDeck = nil
+        dayStore = nil
+
+        guard let credentials = DaySettings.credentials else { return }
+
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("EdgeNotes")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let cache = DayCache(fileURL: dir.appendingPathComponent("day-board.json"))
+        let client = DayClient(credentials: credentials)
+        let newStore = DayStore(api: client, cache: cache)
+        dayStore = newStore
+        dayDeck = DayDeckController(store: newStore)
     }
 }

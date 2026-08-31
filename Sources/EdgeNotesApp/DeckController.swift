@@ -47,7 +47,7 @@ final class DeckController: ObservableObject {
 
     init(store: NoteStore) {
         self.store = store
-        panel = EdgePanel(contentRect: .zero)
+        panel = EdgePanel(contentRect: .zero, edge: .trailing)
         let view = DeckView(controller: self)
         panel.contentView = NSHostingView(rootView: view)
         reposition()
@@ -193,10 +193,6 @@ final class DeckController: ObservableObject {
 
     func reposition() {
         guard let screen = NSScreen.screens.first else { return }
-        let visible = screen.visibleFrame
-        panel.setFrame(
-            NSRect(x: visible.maxX - width, y: visible.minY, width: width, height: visible.height),
-            display: true
-        )
+        panel.reposition(width: width, on: screen)
     }
 }
