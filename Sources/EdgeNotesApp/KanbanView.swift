@@ -14,14 +14,19 @@ import EdgeNotesCore
 struct KanbanView: View {
     @ObservedObject var store: DayStore
 
-    /// `nil` selects the "Backlog" option. The only two shapes
-    /// `DayStore.refresh(sprintID:)` accepts are "no sprint filter" (`nil`)
-    /// and a specific sprint id, so — with no other hook exposed for
-    /// "backlog" — `nil` is what the picker's Backlog entry sends. This is
-    /// the same value the deck's initial `store.refresh()` already uses for
-    /// its default load, so opening the window lands on whatever board is
-    /// already on screen rather than forcing an extra fetch.
+    /// The literal value forwarded to `DayStore.refresh(sprintID:)` /
+    /// `DayAPI.board(sprintID:)`. Per the Day server's own `getBoard` query:
+    /// `sprintId == "backlog"` selects the tasks with no sprint; any other
+    /// value, including a missing/`nil` parameter, selects the requested
+    /// sprint or — when `nil` — the currently ACTIVE sprint. So `nil` is
+    /// "Active Sprint" (also the deck's own default load), and "Backlog" is
+    /// the literal string `"backlog"`, not `nil`. Defaults to `nil` (Active
+    /// Sprint): opening the window lands on whatever board is already on
+    /// screen rather than forcing an extra fetch, and matches what a user
+    /// expects a kanban board to show by default.
     @State private var selectedSprintID: String?
+
+    private static let backlogSprintID = "backlog"
     @State private var searchText: String = ""
     @State private var selectedTaskID: String?
 
@@ -79,6 +84,16 @@ struct KanbanView: View {
             }
         }
         .frame(minWidth: 760, minHeight: 480)
+        // A task that moves out from under the selection (completed,
+        // reassigned out of this sprint filter, deleted…) must not leave a
+        // stale id sitting in `selectedTaskID` — `selectedTaskStillPresent`
+        // only hides the pane, it doesn't clear the id, and a stale id left
+        // around could be read by something downstream (e.g. reappearing if
+        // the same task id comes back on a later refresh, or a future
+        // change that reads `selectedTaskID` outside the `if` above).
+        .onChange(of: selectedTaskStillPresent) { _, isPresent in
+            if !isPresent { selectedTaskID = nil }
+        }
     }
 
     // MARK: - Top bar
@@ -86,7 +101,8 @@ struct KanbanView: View {
     private var topBar: some View {
         HStack(spacing: 12) {
             Picker("Sprint", selection: $selectedSprintID) {
-                Text("Backlog").tag(String?.none)
+                Text("Active Sprint").tag(String?.none)
+                Text("Backlog").tag(String?.some(Self.backlogSprintID))
                 ForEach(store.sprints) { sprint in
                     Text(sprint.name).tag(String?.some(sprint.id))
                 }
@@ -223,13 +239,20 @@ struct KanbanView: View {
     /// are presently filtered out of view; dropping on the column's
     /// background (i.e. `before == nil`) appends to the end.
     private func handleDrop(draggedID: String, before targetTaskID: String?, in column: DayColumn) {
-        var orderedIDs = column.tasks.map(\.id)
+        let currentIDs = column.tasks.map(\.id)
+        var orderedIDs = currentIDs
         orderedIDs.removeAll { $0 == draggedID }
         if let targetTaskID, let index = orderedIDs.firstIndex(of: targetTaskID) {
             orderedIDs.insert(draggedID, at: index)
         } else {
             orderedIDs.append(draggedID)
         }
+        // Dropping a card immediately before the card that already follows
+        // it (or dropping it back at the end when it was already last)
+        // produces the exact same order that's already on screen. Skip the
+        // round-trip entirely rather than sending a no-op reorder to the
+        // API — there's nothing to apply, optimistically or otherwise.
+        guard orderedIDs != currentIDs else { return }
         Task {
             await store.reorder(taskID: draggedID, toStatus: column.key, orderedIDs: orderedIDs)
         }

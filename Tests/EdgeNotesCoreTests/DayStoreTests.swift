@@ -73,6 +73,21 @@ final class DayStoreTests: XCTestCase {
         XCTAssertNotNil(cache.load())
     }
 
+    /// Per the Day server's `getBoard` query, `sprintId == "backlog"` is the
+    /// literal value that selects unsprinted tasks — `nil` selects the
+    /// active sprint instead. `KanbanView`'s "Backlog" picker entry relies
+    /// on `DayStore.refresh(sprintID:)` forwarding that literal untouched
+    /// (rather than, say, normalizing it to `nil`), so a "Backlog"
+    /// selection can never silently show the active sprint's board under
+    /// the wrong label.
+    func testRefreshForwardsBacklogSprintIDLiterally() async {
+        let api = FakeDayAPI()
+        api.boardResult = .success(makeBoard([]))
+        let store = DayStore(api: api, cache: makeCache())
+        await store.refresh(sprintID: "backlog")
+        XCTAssertEqual(api.boardCalls, ["backlog"])
+    }
+
     func testOfflineRefreshKeepsCachedBoardAndMarksStale() async {
         let cache = makeCache()
         cache.save(makeBoard([makeTask("A-1", .todo)]))
