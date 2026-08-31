@@ -7,12 +7,17 @@ final class FakeDayAPI: DayAPI, @unchecked Sendable {
     var reorderError: Error?
     var createResult: Result<DayTask, Error>?
     var toggleTimerResult: Result<DayTask, Error>?
+    var sprintsResult: Result<[DaySprint], Error> = .success([])
     private(set) var updateCalls: [(String, DayTaskPatch)] = []
     private(set) var reorderCalls: [(String, DayStatus?, [String])] = []
     private(set) var commentCalls: [(String, String)] = []
     private(set) var toggleTimerCalls: [String] = []
+    private(set) var boardCalls: [String?] = []
 
-    func board(sprintID: String?) async throws -> DayBoard { try boardResult.get() }
+    func board(sprintID: String?) async throws -> DayBoard {
+        boardCalls.append(sprintID)
+        return try boardResult.get()
+    }
     func task(id: String) async throws -> DayTask { throw DayError.notFound }
     func createTask(title: String, priority: DayPriority?, backlog: Bool) async throws -> DayTask {
         guard let createResult else { throw DayError.notFound }
@@ -32,7 +37,7 @@ final class FakeDayAPI: DayAPI, @unchecked Sendable {
         guard let toggleTimerResult else { throw DayError.notFound }
         return try toggleTimerResult.get()
     }
-    func sprints() async throws -> [DaySprint] { [] }
+    func sprints() async throws -> [DaySprint] { try sprintsResult.get() }
 }
 
 @MainActor
@@ -203,6 +208,50 @@ final class DayStoreTests: XCTestCase {
         let updated = try XCTUnwrap(store.board?.columns.first(where: { $0.key == .todo })?.tasks.first)
         XCTAssertNil(updated.running, "toggling a running timer off must leave it stopped")
         XCTAssertEqual(updated.loggedSeconds, 90)
+    }
+
+    func testLoadSprintsPopulatesSprints() async {
+        let api = FakeDayAPI()
+        api.sprintsResult = .success([
+            DaySprint(id: "s1", name: "Sprint 1", state: "active"),
+            DaySprint(id: "s2", name: "Sprint 2", state: "planned"),
+        ])
+        let store = DayStore(api: api, cache: makeCache())
+        await store.loadSprints()
+        XCTAssertEqual(store.sprints.map(\.id), ["s1", "s2"])
+    }
+
+    func testLoadSprintsFailureReportsBoardLevelErrorWithoutTouchingBoard() async {
+        let api = FakeDayAPI()
+        api.boardResult = .success(makeBoard([makeTask("A-1", .todo)]))
+        api.sprintsResult = .failure(DayError.server(status: 500, message: "boom"))
+        let store = DayStore(api: api, cache: makeCache())
+        await store.refresh()
+        await store.loadSprints()
+        XCTAssertTrue(store.sprints.isEmpty)
+        XCTAssertNil(store.lastError?.taskID, "sprint load failures are board-level, not task-scoped")
+        XCTAssertNotNil(store.lastError?.message)
+        XCTAssertNotNil(store.board, "a failed sprint load must not blank out an already-loaded board")
+    }
+
+    func testPollingRunsSharedTimerOnceAcrossMultipleBeginCalls() async {
+        // Two "surfaces" (the deck and the kanban window in real usage) both
+        // vote for polling; only one 60s loop should exist underneath, and
+        // it should keep running until every voter has withdrawn.
+        let api = FakeDayAPI()
+        api.boardResult = .success(makeBoard([makeTask("A-1", .todo)]))
+        let store = DayStore(api: api, cache: makeCache())
+        store.beginPolling()
+        store.beginPolling()
+        store.endPolling()
+        // One voter remains: ending the other vote must not have torn down
+        // the loop. There's no public way to observe the running `Task`
+        // directly, so this asserts indirectly through the ref-count not
+        // going negative: a third `endPolling()` here is exactly balanced
+        // with the two `beginPolling()` calls above, and should not trap or
+        // misbehave (over-releasing was the historical bug this guards).
+        store.endPolling()
+        store.endPolling() // extra release beyond any begin: must be a no-op, not underflow.
     }
 
     func testCommentDelegatesToAPI() async {

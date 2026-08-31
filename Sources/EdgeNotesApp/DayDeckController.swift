@@ -28,11 +28,16 @@ final class DayDeckController: ObservableObject {
     private var menuBeginObserver: NSObjectProtocol?
     private var menuEndObserver: NSObjectProtocol?
 
-    /// Periodic background refresh while the deck is doing anything other
-    /// than sitting collapsed. Cancelled the moment the deck collapses again
-    /// and, critically, in `deinit` — nothing here may outlive the
-    /// controller.
-    private var refreshTask: Task<Void, Never>?
+    /// Whether this controller currently holds a vote in `DayStore`'s
+    /// shared, ref-counted 60s polling loop (see `DayStore.beginPolling`).
+    /// The kanban window (Task 7) votes the same way while it's visible, so
+    /// there is exactly one refresh timer no matter how many surfaces are
+    /// open at once. Tracked locally, rather than asking the store, so
+    /// `endPolling()` is called at most once per `beginPolling()` — the
+    /// store's ref count would otherwise go negative if `teardown()` ran
+    /// after the deck had already collapsed to `.collapsed` (and thus
+    /// already called `endPolling()`) once.
+    private var isPolling = false
 
     // Larguras por estado; altura sempre a área visível da tela. Same
     // collapsed/fanned numbers as the phase-1 deck; "aberto" is a flat 400
@@ -111,8 +116,10 @@ final class DayDeckController: ObservableObject {
     /// off-main, a real bug). Doing it here, at a moment we already know is
     /// on the main actor, sidesteps that.
     func teardown() {
-        refreshTask?.cancel()
-        refreshTask = nil
+        if isPolling {
+            isPolling = false
+            store.endPolling()
+        }
         panel.close()
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
         if let resignKeyObserver { NotificationCenter.default.removeObserver(resignKeyObserver) }
@@ -120,12 +127,13 @@ final class DayDeckController: ObservableObject {
         if let menuEndObserver { NotificationCenter.default.removeObserver(menuEndObserver) }
     }
 
-    /// Safety net only: guarantees the refresh loop stops even if `teardown`
-    /// was somehow never called. `Task.cancel()` is not actor-isolated, so
-    /// this is safe to run off the main actor.
-    deinit {
-        refreshTask?.cancel()
-    }
+    // Deliberately no `deinit` safety net here anymore: unlike the old
+    // per-controller `Task`, the refresh loop now lives in `DayStore` and is
+    // shared, so cancelling it is only safe by going through
+    // `endPolling()`'s ref count on the main actor — which `deinit` cannot
+    // do (it isn't guaranteed to run on the main actor; see `teardown`'s
+    // comment). `AppDelegate` always calls `teardown()` before dropping this
+    // controller, so that's the one and only place polling is released.
 
     // MARK: - Closing on a click outside an open column/task
 
@@ -179,24 +187,22 @@ final class DayDeckController: ObservableObject {
         panel.reposition(width: width, on: screen)
     }
 
-    /// Starts (or stops) the 60s background refresh. Active whenever the
-    /// deck is showing anything beyond the collapsed pill — there is no
-    /// kanban board window yet for the brief's "or the kanban window is
-    /// visible" clause to apply to; see the task report for that deviation.
+    /// Casts (or withdraws) this deck's vote in `DayStore`'s shared 60s
+    /// polling loop. Active whenever the deck is showing anything beyond the
+    /// collapsed pill. The kanban window (`KanbanWindowController`) votes
+    /// independently while it's visible — see `DayStore.beginPolling` — so
+    /// there's still exactly one 60s timer whether just the deck, just the
+    /// window, or both are open at once.
     private func updateRefreshTimer() {
         let shouldRun = state != .collapsed
         if shouldRun {
-            guard refreshTask == nil else { return }
-            refreshTask = Task { [weak self] in
-                while !Task.isCancelled {
-                    try? await Task.sleep(nanoseconds: 60_000_000_000)
-                    guard !Task.isCancelled else { break }
-                    await self?.store.refresh()
-                }
-            }
+            guard !isPolling else { return }
+            isPolling = true
+            store.beginPolling()
         } else {
-            refreshTask?.cancel()
-            refreshTask = nil
+            guard isPolling else { return }
+            isPolling = false
+            store.endPolling()
         }
     }
 }

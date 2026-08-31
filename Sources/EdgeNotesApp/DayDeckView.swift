@@ -262,7 +262,10 @@ struct DayDeckView: View {
                     .onTapGesture { controller.closeOpen(to: .column(found.column.key)) }
                 HStack(alignment: .top, spacing: 0) {
                     fannedTabsColumn
-                    DayTaskDetailView(controller: controller, taskID: id)
+                    DayTaskDetailView(
+                        store: controller.store, taskID: id,
+                        onClose: { column in controller.closeOpen(to: .column(column.key)) }
+                    )
                         .id(id)
                         .padding(.leading, 8)
                         .padding(.top, 60)

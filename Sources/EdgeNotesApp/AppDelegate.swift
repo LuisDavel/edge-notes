@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var daySettingsController: DaySettingsWindowController!
     private var dayStore: DayStore?
     private var dayDeck: DayDeckController?
+    private var kanbanController: KanbanWindowController?
     private var dayCredentialsObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -61,6 +62,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let library = NSMenuItem(title: "Open Library", action: #selector(openLibrary), keyEquivalent: "l")
         library.target = self
         menu.addItem(library)
+        let kanban = NSMenuItem(title: "Open Kanban", action: #selector(openKanban), keyEquivalent: "k")
+        kanban.target = self
+        menu.addItem(kanban)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit EdgeNotes", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         statusItem.menu = menu
@@ -83,6 +87,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         daySettingsController.show()
     }
 
+    /// No-op (rather than an error alert) when Day credentials aren't
+    /// configured yet: `kanbanController` only exists once `configureDayDeck`
+    /// has a `DayStore` to back it, the same gate the deck itself is behind.
+    /// "Day Settings…" is right above this item in the menu, so a user who
+    /// hits this before configuring credentials has the fix one click away.
+    @objc @MainActor private func openKanban() {
+        kanbanController?.show()
+    }
+
     /// Creates the left-edge Day deck (and its backing `DayStore`) when
     /// credentials exist, and tears it down when they don't. Called once at
     /// launch and again every time `.dayCredentialsChanged` fires, so saving
@@ -91,6 +104,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor private func configureDayDeck() {
         dayDeck?.teardown()
         dayDeck = nil
+        kanbanController?.teardown()
+        kanbanController = nil
         dayStore = nil
 
         guard let credentials = DaySettings.credentials else { return }
@@ -103,5 +118,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let newStore = DayStore(api: client, cache: cache)
         dayStore = newStore
         dayDeck = DayDeckController(store: newStore)
+        kanbanController = KanbanWindowController(store: newStore)
     }
 }

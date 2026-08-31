@@ -29,6 +29,7 @@ public final class DayStore: ObservableObject {
     @Published public private(set) var board: DayBoard?
     @Published public private(set) var state: DayState = .idle
     @Published public private(set) var lastError: DayMutationError?
+    @Published public private(set) var sprints: [DaySprint] = []
 
     private let api: DayAPI
     private let cache: DayCache
@@ -119,6 +120,19 @@ public final class DayStore: ObservableObject {
         }
     }
 
+    /// Loads the list of sprints for a sprint picker (Task 7's kanban
+    /// window). A board-level failure, like `refresh`'s — tagged
+    /// `taskID: nil` — but it deliberately does not touch `board` or
+    /// `state`: a failed sprint list should not blank out a board that's
+    /// already loaded and displayed.
+    public func loadSprints() async {
+        do {
+            sprints = try await api.sprints()
+        } catch {
+            lastError = DayMutationError(taskID: nil, message: message(for: error))
+        }
+    }
+
     public func createTask(title: String) async {
         do {
             let task = try await api.createTask(title: title, priority: nil, backlog: false)
@@ -169,6 +183,38 @@ public final class DayStore: ObservableObject {
     /// user has done anything in it.
     public func clearError() {
         lastError = nil
+    }
+
+    // MARK: - Shared 60s refresh polling
+
+    /// Ref-counted so that any number of surfaces — the left-edge deck, the
+    /// kanban window, both at once — can ask for periodic refreshing without
+    /// ever running more than one 60s loop. Each caller that wants polling
+    /// while it's visible calls `beginPolling()` when it becomes visible and
+    /// `endPolling()` when it stops (collapses/closes/deallocates); the loop
+    /// runs exactly while the count is > 0 and is torn down the moment it
+    /// drops back to 0.
+    private var pollingRefCount = 0
+    private var refreshTask: Task<Void, Never>?
+
+    public func beginPolling() {
+        pollingRefCount += 1
+        guard refreshTask == nil else { return }
+        refreshTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 60_000_000_000)
+                guard !Task.isCancelled else { break }
+                await self?.refresh()
+            }
+        }
+    }
+
+    public func endPolling() {
+        guard pollingRefCount > 0 else { return }
+        pollingRefCount -= 1
+        guard pollingRefCount == 0 else { return }
+        refreshTask?.cancel()
+        refreshTask = nil
     }
 
     // MARK: - Helpers

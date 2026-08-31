@@ -103,8 +103,20 @@ private extension String {
 /// (the transparent backdrop `DayDeckView.taskView(id:)` places behind this
 /// view). Hover-exit never closes it — see the comment in `DayDeckView.body`.
 struct DayTaskDetailView: View {
-    @ObservedObject var controller: DayDeckController
+    /// Decoupled from `DayDeckController` on purpose: the kanban window
+    /// (Task 7) reuses this exact view for its detail pane, and it has no
+    /// deck, no `DayDeckState`, and no fan/column navigation to close back
+    /// into. `store` is the one thing both hosts share; `onClose` lets each
+    /// host decide what "closing this card" means for it — the deck backs
+    /// out to the task's current column, the kanban window just clears its
+    /// selection. `column` is the parameter already threaded through
+    /// `card(_:in:)`/`found`, i.e. the task's *current* column looked up
+    /// fresh on every render, so a status change made from inside this same
+    /// card and then immediately closed still reports the right column to
+    /// the deck.
+    @ObservedObject var store: DayStore
     let taskID: String
+    let onClose: (DayColumn) -> Void
 
     @State private var commentBody: String = ""
     @State private var isSendingComment = false
@@ -115,7 +127,7 @@ struct DayTaskDetailView: View {
     /// refresh) is reflected here immediately without this view owning a
     /// stale copy.
     private var found: (task: DayTask, column: DayColumn)? {
-        for column in controller.store.board?.columns ?? [] {
+        for column in store.board?.columns ?? [] {
             if let task = column.tasks.first(where: { $0.id == taskID }) {
                 return (task, column)
             }
@@ -142,7 +154,7 @@ struct DayTaskDetailView: View {
             // written by every mutation on the board (refresh, a drag
             // elsewhere, another task's comment, …), so only render it here
             // when it is actually about *this* task.
-            if let error = controller.store.lastError, error.taskID == task.id {
+            if let error = store.lastError, error.taskID == task.id {
                 errorStrip(error.message)
             }
             ScrollView {
@@ -187,12 +199,12 @@ struct DayTaskDetailView: View {
             .shadow(color: .black.opacity(0.20), radius: 10, x: 2, y: 3)
         )
         .contentShape(RoundedRectangle(cornerRadius: 14))
-        .onExitCommand { controller.closeOpen(to: .column(column.key)) }
+        .onExitCommand { onClose(column) }
         // Opening (or reopening) a card starts clean: without this, an
         // error left over from a previous mutation on this same task would
         // render the instant the card appears, before the user has done
         // anything in this session with it.
-        .onAppear { controller.store.clearError() }
+        .onAppear { store.clearError() }
     }
 
     // MARK: - Header (Task 5's title, extended with the task id)
@@ -201,7 +213,7 @@ struct DayTaskDetailView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Button {
-                    controller.closeOpen(to: .column(column.key))
+                    onClose(column)
                 } label: {
                     Image(systemName: "chevron.left")
                         .font(.system(size: 11, weight: .semibold))
@@ -231,7 +243,7 @@ struct DayTaskDetailView: View {
         Menu {
             ForEach(DayStatus.allCases, id: \.self) { status in
                 Button(status.displayName) {
-                    Task { await controller.store.setStatus(taskID: task.id, to: status) }
+                    Task { await store.setStatus(taskID: task.id, to: status) }
                 }
             }
         } label: {
@@ -244,7 +256,7 @@ struct DayTaskDetailView: View {
         Menu {
             ForEach(DayPriority.allCases, id: \.self) { priority in
                 Button(priority.label.isEmpty ? "None" : priority.label) {
-                    Task { await controller.store.setPriority(taskID: task.id, to: priority) }
+                    Task { await store.setPriority(taskID: task.id, to: priority) }
                 }
             }
         } label: {
@@ -262,7 +274,7 @@ struct DayTaskDetailView: View {
                 guard !isTogglingTimer else { return }
                 isTogglingTimer = true
                 Task {
-                    await controller.store.toggleTimer(taskID: task.id)
+                    await store.toggleTimer(taskID: task.id)
                     isTogglingTimer = false
                 }
             } label: {
@@ -313,9 +325,9 @@ struct DayTaskDetailView: View {
         guard !body.isEmpty, !isSendingComment else { return }
         isSendingComment = true
         Task {
-            await controller.store.comment(taskID: taskID, body: body)
+            await store.comment(taskID: taskID, body: body)
             isSendingComment = false
-            if controller.store.lastError == nil {
+            if store.lastError == nil {
                 commentBody = ""
             }
         }
@@ -343,7 +355,7 @@ struct DayTaskDetailView: View {
     private func footer(_ column: DayColumn) -> some View {
         HStack {
             Spacer()
-            FooterButton(title: "Close") { controller.closeOpen(to: .column(column.key)) }
+            FooterButton(title: "Close") { onClose(column) }
         }
     }
 }
